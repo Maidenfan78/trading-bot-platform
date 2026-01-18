@@ -1,0 +1,59 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Environment
+.env
+.env.4h
+.env.4h-*
+
+# Logs (runtime logs only, not React components)
+/logs/
+*.log
+bot-btc.log
+error-btc.log
+bot-4h.log
+error-4h.log
+
+# CSV Trade Logs (performance tracking)
+logs/csv/
+*.csv
+
+# State
+state.json
+state-4h.json
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test coverage
+coverage/
+
+# Claude session documentation (local context only)
+claude/
+.claude/
+nul
+
+# Temporary test files
+tests.txt
+bot_backup/
+prompts.txt
+
+# System files
+*.tmp
+*.bak
+
+# Commercial secrets
+license-keys.json
+customer-database.db
+billing-secrets.env
+

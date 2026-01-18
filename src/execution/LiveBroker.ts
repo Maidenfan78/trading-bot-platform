@@ -218,7 +218,7 @@ export class LiveBroker implements Broker {
 
       // 1. Determine which BTC mint this leg uses
       // For simplicity, check both mints and use whichever has the balance
-      const btcMint = this.config.cbBtcMint; // Default to cbBTC
+      const btcMint = this.config.cbBtcMint || this.config.wbtcMint;
 
       // 2. Check if we can close
       const closeCheck = await canClosePosition(

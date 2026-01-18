@@ -69,7 +69,7 @@ export async function getAllBalances(
   connection: Connection,
   walletPublicKey: PublicKey,
   usdcMint: string,
-  cbBtcMint: string,
+  cbBtcMint: string | undefined,
   wbtcMint: string,
   logger?: Logger
 ): Promise<{
@@ -83,7 +83,9 @@ export async function getAllBalances(
 
     const [usdc, cbBtc, wbtc] = await Promise.all([
       getTokenBalance(connection, walletPublicKey, new PublicKey(usdcMint), logger),
-      getTokenBalance(connection, walletPublicKey, new PublicKey(cbBtcMint), logger),
+      cbBtcMint
+        ? getTokenBalance(connection, walletPublicKey, new PublicKey(cbBtcMint), logger)
+        : Promise.resolve(0),
       getTokenBalance(connection, walletPublicKey, new PublicKey(wbtcMint), logger),
     ]);
 
@@ -110,7 +112,7 @@ export async function canTrade(
   connection: Connection,
   walletPublicKey: PublicKey,
   usdcMint: string,
-  cbBtcMint: string,
+  cbBtcMint: string | undefined,
   wbtcMint: string,
   tradeSizeUsdc: number,
   config: BalanceConfig,

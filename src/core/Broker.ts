@@ -116,7 +116,7 @@ export interface LiveBrokerConfig {
   rpcUrl: string;
   walletSecretKey: string;
   usdcMint: string;
-  cbBtcMint: string;
+  cbBtcMint?: string;
   wbtcMint: string;
   slippageBps: number;
   maxPriceImpactBps: number;

@@ -14,7 +14,7 @@ import { QuoteResponse, Logger } from '../types';
 export interface JupiterConfig {
   rpcUrl: string;
   usdcMint: string;
-  cbBtcMint: string;
+  cbBtcMint?: string;
   wbtcMint: string;
   slippageBps: number;
   maxPriceImpactBps: number;
@@ -50,26 +50,28 @@ export class JupiterClient {
     // Convert USDC amount to lamports (6 decimals)
     const usdcLamports = Math.floor(usdcAmount * 1_000_000);
 
-    // Try cbBTC first (preferred)
-    try {
-      this.logger?.info('Attempting cbBTC quote...');
-      const cbBtcQuote = await this.getQuote(
-        this.config.usdcMint,
-        this.config.cbBtcMint,
-        usdcLamports
-      );
+    if (this.config.cbBtcMint) {
+      // Try cbBTC first (preferred)
+      try {
+        this.logger?.info('Attempting cbBTC quote...');
+        const cbBtcQuote = await this.getQuote(
+          this.config.usdcMint,
+          this.config.cbBtcMint,
+          usdcLamports
+        );
 
-      if (cbBtcQuote && this.isQuoteAcceptable(cbBtcQuote)) {
-        this.logger?.info('✓ cbBTC quote accepted', {
-          priceImpact: cbBtcQuote.priceImpactPct.toFixed(4) + '%',
-          outAmount: cbBtcQuote.outAmount,
-        });
-        return { quote: cbBtcQuote, btcMint: this.config.cbBtcMint };
-      } else {
-        this.logger?.warn('cbBTC quote rejected (price impact too high or failed)');
+        if (cbBtcQuote && this.isQuoteAcceptable(cbBtcQuote)) {
+          this.logger?.info('V cbBTC quote accepted', {
+            priceImpact: cbBtcQuote.priceImpactPct.toFixed(4) + '%',
+            outAmount: cbBtcQuote.outAmount,
+          });
+          return { quote: cbBtcQuote, btcMint: this.config.cbBtcMint };
+        } else {
+          this.logger?.warn('cbBTC quote rejected (price impact too high or failed)');
+        }
+      } catch (error: any) {
+        this.logger?.warn('cbBTC quote failed:', error.message);
       }
-    } catch (error: any) {
-      this.logger?.warn('cbBTC quote failed:', error.message);
     }
 
     // Fall back to WBTC

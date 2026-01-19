@@ -215,6 +215,42 @@ export {
 export type { MultiAssetManagerConfig } from './multi-asset';
 
 // ============================================================================
+// Journal
+// ============================================================================
+
+export {
+  EventStore,
+  JournalEmitter,
+} from './journal';
+
+export type {
+  JournalEvent,
+  JournalEventType,
+  JournalEventCategory,
+  JournalEventPayload,
+  MarketContext,
+  TrendDirection,
+  VolatilityLevel,
+  EventQueryFilters,
+  EventQueryResult,
+  EventStoreConfig,
+  JournalEmitterConfig,
+  // Payload types
+  CycleStartPayload,
+  CycleEndPayload,
+  SignalGeneratedPayload,
+  SignalRejectedPayload,
+  NoSignalPayload,
+  PositionOpenedPayload,
+  TpHitPayload,
+  TrailingStopUpdatedPayload,
+  TrailingStopHitPayload,
+  RunnerTrimmedPayload,
+  TradeFailedPayload,
+  ErrorPayload,
+} from './journal';
+
+// ============================================================================
 // Dashboard (optional - import from 'trading-bot-platform/dashboard')
 // ============================================================================
 

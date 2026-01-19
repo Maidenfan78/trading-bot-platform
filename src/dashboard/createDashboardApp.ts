@@ -31,6 +31,12 @@ import {
 } from './services';
 
 import {
+  EventStore,
+  JournalEventType,
+  JournalEventCategory,
+} from '../journal/index.js';
+
+import {
   createVerifyToken,
   createLogin,
   rateLimitLogin,
@@ -49,6 +55,7 @@ export interface DashboardApp {
   csvReader: CSVReader;
   logTailer: LogTailer;
   journalDb: JournalDbService;
+  eventStore: EventStore;
   start: () => Promise<void>;
   stop: () => Promise<void>;
 }
@@ -95,6 +102,7 @@ export function createDashboardApp(config: DashboardConfig): DashboardApp {
     mkdirSync(dataDir, { recursive: true });
   }
   const journalDb = new JournalDbService(dataDir);
+  const eventStore = new EventStore({ dataDir });
 
   // Bot configuration helpers
   const legacyBotIdMap: Record<string, string> = {
@@ -735,6 +743,93 @@ export function createDashboardApp(config: DashboardConfig): DashboardApp {
 
   app.use('/api/journal', journalRouter);
 
+  // ========== Timeline Routes ==========
+  const timelineRouter = Router();
+
+  // Get timeline feed (paginated)
+  timelineRouter.get('/', asyncHandler(async (req: Request, res: Response) => {
+    const {
+      botId,
+      asset,
+      types,
+      category,
+      startTime,
+      endTime,
+      cycleId,
+      positionId,
+      limit,
+      offset,
+    } = req.query;
+
+    const result = eventStore.query({
+      botId: botId as string | undefined,
+      asset: asset as string | undefined,
+      types: types ? (types as string).split(',') as JournalEventType[] : undefined,
+      category: category as JournalEventCategory | undefined,
+      startTime: startTime ? parseInt(startTime as string) : undefined,
+      endTime: endTime ? parseInt(endTime as string) : undefined,
+      cycleId: cycleId as string | undefined,
+      positionId: positionId as string | undefined,
+      limit: parseInt(limit as string) || 50,
+      offset: parseInt(offset as string) || 0,
+    });
+
+    res.json({
+      success: true,
+      events: result.events,
+      total: result.total,
+      hasMore: result.hasMore,
+    });
+  }));
+
+  // Get all events for a specific cycle
+  timelineRouter.get('/cycle/:cycleId', asyncHandler(async (req: Request, res: Response) => {
+    const cycleId = req.params.cycleId as string;
+    const events = eventStore.getCycleEvents(cycleId);
+    res.json({ success: true, events, total: events.length });
+  }));
+
+  // Get all events for a specific position
+  timelineRouter.get('/position/:positionId', asyncHandler(async (req: Request, res: Response) => {
+    const positionId = req.params.positionId as string;
+    const events = eventStore.getPositionEvents(positionId);
+    res.json({ success: true, events, total: events.length });
+  }));
+
+  // Get filter options for UI dropdowns
+  timelineRouter.get('/filters', asyncHandler(async (_req: Request, res: Response) => {
+    const options = eventStore.getFilterOptions();
+    res.json({
+      success: true,
+      filters: {
+        botIds: options.botIds,
+        assets: options.assets,
+        categories: options.categories,
+        types: options.types,
+      },
+    });
+  }));
+
+  // Get recent events (for real-time dashboard)
+  timelineRouter.get('/recent', asyncHandler(async (req: Request, res: Response) => {
+    const limit = parseInt(req.query.limit as string) || 20;
+    const events = eventStore.recent(limit);
+    res.json({ success: true, events, total: events.length });
+  }));
+
+  // Archive old events (admin)
+  timelineRouter.post('/archive', verifyToken, asyncHandler(async (_req: Request, res: Response) => {
+    const result = eventStore.archive();
+    res.json({
+      success: true,
+      message: `Archived ${result.archivedCount} events`,
+      archivedCount: result.archivedCount,
+      archivedTo: result.archivedTo,
+    });
+  }));
+
+  app.use('/api/timeline', timelineRouter);
+
   // Error handling middleware (must be last)
   app.use(notFoundHandler);
   app.use(createErrorHandler(process.env.NODE_ENV === 'development'));
@@ -793,6 +888,7 @@ export function createDashboardApp(config: DashboardConfig): DashboardApp {
     csvReader,
     logTailer,
     journalDb,
+    eventStore,
     start,
     stop,
   };

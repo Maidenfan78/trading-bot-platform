@@ -41,9 +41,7 @@ export class CSVReader {
    */
   readTrades(limit?: number, offset = 0): TradeEntry[] {
     const tradeFiles = [
-      ...this.getAllCSVFilesFromDir(this.effectiveCsvDir, 'trade-entries'),
       ...this.getAllCSVFilesFromDir(this.effectiveCsvDir, 'trade-exits'),
-      ...this.getAllCSVFilesFromDir(this.effectiveCsvDir, 'trades'),
     ];
     const allTrades: TradeEntry[] = [];
 
@@ -57,36 +55,19 @@ export class CSVReader {
 
         for (const row of records) {
           const timestamp = row.Timestamp ? Number(row.Timestamp) : new Date(row.Date).getTime();
-
-          if (row.ExitPrice || row.LegType) {
-            const pnl = row.PnL_USDC ? parseFloat(row.PnL_USDC) : undefined;
-            allTrades.push({
-              date: row.Date,
-              timestamp,
-              action: row.Action || 'CLOSE',
-              price: parseFloat(row.ExitPrice || row.Price || '0'),
-              signalType: row.SignalType || row.LegType || 'EXIT',
-              mfi: row.MFI ? parseFloat(row.MFI) : 0,
-              usdcAmount: parseFloat(row.USDCAmount || row.AmountUSDC || '0'),
-              btcAmount: parseFloat(row.BTCAmount || row.AmountBTC || row.Quantity || '0'),
-              slippage: row.Slippage ? parseFloat(row.Slippage) : undefined,
-              asset: row.Asset,
-              ...(pnl !== undefined ? { pnl } : {}),
-            });
-            continue;
-          }
-
+          const pnl = row.PnL_USDC ? parseFloat(row.PnL_USDC) : undefined;
           allTrades.push({
             date: row.Date,
             timestamp,
-            action: row.Action,
-            price: parseFloat(row.Price),
-            signalType: row.SignalType,
-            mfi: parseFloat(row.MFI),
+            action: row.Action || 'CLOSE',
+            price: parseFloat(row.ExitPrice || row.Price || '0'),
+            signalType: row.SignalType || row.LegType || 'EXIT',
+            mfi: row.MFI ? parseFloat(row.MFI) : 0,
             usdcAmount: parseFloat(row.USDCAmount || row.AmountUSDC || '0'),
-            btcAmount: parseFloat(row.BTCAmount || row.AmountBTC || '0'),
+            btcAmount: parseFloat(row.BTCAmount || row.AmountBTC || row.Quantity || '0'),
             slippage: row.Slippage ? parseFloat(row.Slippage) : undefined,
             asset: row.Asset,
+            ...(pnl !== undefined ? { pnl } : {}),
           });
         }
       } catch (error) {

@@ -10,6 +10,23 @@ import { PositionLeg, Logger } from '../types';
  */
 
 /**
+ * Format a price with appropriate precision based on magnitude.
+ * Low-priced assets (like JUP at ~$0.19) need more decimal places
+ * to avoid significant rounding errors.
+ */
+function formatPrice(price: number): string {
+  if (price >= 100) {
+    return price.toFixed(2);      // BTC, ETH: $3017.70
+  } else if (price >= 1) {
+    return price.toFixed(4);      // SOL, UNI: $128.0800
+  } else if (price >= 0.01) {
+    return price.toFixed(6);      // JUP: $0.195473
+  } else {
+    return price.toFixed(8);      // Sub-cent tokens
+  }
+}
+
+/**
  * Trade Entry Log
  * Logs every position opening with all relevant context
  */
@@ -126,13 +143,13 @@ export function createTradingCSVLogger(config: TradingCSVLoggerConfig) {
         entry.action,
         entry.signalType,
         entry.mfi.toFixed(2),
-        entry.atr.toFixed(2),
-        entry.price.toFixed(2),
+        formatPrice(entry.atr),
+        formatPrice(entry.price),
         entry.totalUSDC.toFixed(2),
         entry.totalQuantity.toFixed(8),
         entry.legsOpened,
-        entry.targetPrice.toFixed(2),
-        entry.trailingStop.toFixed(2),
+        formatPrice(entry.targetPrice),
+        formatPrice(entry.trailingStop),
         entry.mode,
       ].join(',') + '\n';
 
@@ -164,8 +181,8 @@ export function createTradingCSVLogger(config: TradingCSVLoggerConfig) {
         exit.legId,
         exit.legType,
         exit.entryDate,
-        exit.entryPrice.toFixed(2),
-        exit.exitPrice.toFixed(2),
+        formatPrice(exit.entryPrice),
+        formatPrice(exit.exitPrice),
         exit.quantity.toFixed(8),
         exit.holdingPeriod,
         `"${exit.exitReason}"`,  // Quote in case it has commas
@@ -198,7 +215,7 @@ export function createTradingCSVLogger(config: TradingCSVLoggerConfig) {
       const row = [
         summary.date,
         summary.asset,
-        summary.price.toFixed(2),
+        formatPrice(summary.price),
         summary.usdcBalance.toFixed(2),
         summary.assetBalance.toFixed(8),
         summary.portfolioValue.toFixed(2),

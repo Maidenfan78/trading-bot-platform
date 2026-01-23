@@ -9,6 +9,22 @@ import { Candle, Signal, PositionLeg, Logger } from '../types';
  */
 
 /**
+ * Format a price with appropriate precision based on magnitude.
+ * Low-priced assets need more decimal places to avoid rounding errors.
+ */
+function formatPrice(price: number): string {
+  if (price >= 100) {
+    return price.toFixed(2);      // BTC, ETH: $3017.70
+  } else if (price >= 1) {
+    return price.toFixed(4);      // SOL, UNI: $128.0800
+  } else if (price >= 0.01) {
+    return price.toFixed(6);      // JUP: $0.195473
+  } else {
+    return price.toFixed(8);      // Sub-cent tokens
+  }
+}
+
+/**
  * CSV Logger configuration
  */
 export interface CSVLoggerConfig {
@@ -228,13 +244,13 @@ export function createCSVLogger(config: CSVLoggerConfig) {
           leg.type,
           leg.status,
           entryDate,
-          leg.entryPrice.toFixed(2),
+          formatPrice(leg.entryPrice),
           leg.quantity.toFixed(8),
-          leg.targetPrice !== undefined ? leg.targetPrice.toFixed(2) : '',
-          leg.trailingStop !== undefined ? leg.trailingStop.toFixed(2) : '',
-          leg.highestPrice !== undefined ? leg.highestPrice.toFixed(2) : '',
+          leg.targetPrice !== undefined ? formatPrice(leg.targetPrice) : '',
+          leg.trailingStop !== undefined ? formatPrice(leg.trailingStop) : '',
+          leg.highestPrice !== undefined ? formatPrice(leg.highestPrice) : '',
           closeDate,
-          leg.closePrice !== undefined ? leg.closePrice.toFixed(2) : '',
+          leg.closePrice !== undefined ? formatPrice(leg.closePrice) : '',
           escapeCSV(leg.closeReason || ''),
           pnl,
           pnlPct,
@@ -269,7 +285,7 @@ export function createCSVLogger(config: CSVLoggerConfig) {
         return [
           snapshot.date,
           snapshot.timestamp,
-          snapshot.btcPrice.toFixed(2),
+          formatPrice(snapshot.btcPrice),
           snapshot.usdcBalance.toFixed(2),
           snapshot.btcBalance.toFixed(8),
           snapshot.portfolioValue.toFixed(2),
@@ -310,7 +326,7 @@ export function createCSVLogger(config: CSVLoggerConfig) {
         [
           snapshot.date,
           snapshot.timestamp,
-          snapshot.btcPrice.toFixed(2),
+          formatPrice(snapshot.btcPrice),
           snapshot.usdcBalance.toFixed(2),
           snapshot.btcBalance.toFixed(8),
           snapshot.portfolioValue.toFixed(2),

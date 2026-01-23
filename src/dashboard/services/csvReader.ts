@@ -230,6 +230,20 @@ export class CSVReader {
   }
 
   /**
+   * Get the P&L for a position, preferring the pre-calculated pnlUsdc
+   * to avoid rounding errors from recalculating with rounded CSV prices.
+   */
+  private getPositionPnL(p: PositionLeg): number {
+    if (p.pnlUsdc !== undefined) {
+      return p.pnlUsdc;
+    }
+    if (p.closePrice && p.entryPrice) {
+      return (p.closePrice - p.entryPrice) * p.quantity;
+    }
+    return 0;
+  }
+
+  /**
    * Calculate performance metrics from positions
    */
   calculateMetrics(positions: PositionLeg[]): {
@@ -241,24 +255,12 @@ export class CSVReader {
     avgLoss: number;
   } {
     const closedPositions = positions.filter((p) => p.status === 'CLOSED');
-    const wins = closedPositions.filter((p) => {
-      if (!p.closePrice || !p.entryPrice) return false;
-      return (p.closePrice - p.entryPrice) > 0;
-    });
-    const losses = closedPositions.filter((p) => {
-      if (!p.closePrice || !p.entryPrice) return false;
-      return (p.closePrice - p.entryPrice) < 0;
-    });
 
-    const totalWins = wins.reduce((sum, p) => {
-      return sum + ((p.closePrice! - p.entryPrice) * p.quantity);
-    }, 0);
+    const wins = closedPositions.filter((p) => this.getPositionPnL(p) > 0);
+    const losses = closedPositions.filter((p) => this.getPositionPnL(p) < 0);
 
-    const totalLosses = Math.abs(
-      losses.reduce((sum, p) => {
-        return sum + ((p.closePrice! - p.entryPrice) * p.quantity);
-      }, 0)
-    );
+    const totalWins = wins.reduce((sum, p) => sum + this.getPositionPnL(p), 0);
+    const totalLosses = Math.abs(losses.reduce((sum, p) => sum + this.getPositionPnL(p), 0));
 
     return {
       totalTrades: closedPositions.length,

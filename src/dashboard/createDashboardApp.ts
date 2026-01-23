@@ -379,12 +379,25 @@ export function createDashboardApp(config: DashboardConfig): DashboardApp {
 
       const botCsvReader = new CSVReader(config.csvDir, bot.csvDir, getBotConfig);
       let metrics = { totalTrades: 0, totalPnL: 0, winRate: 0 };
+      let lastTradeTime = 0;
 
       try {
         const positions = botCsvReader.readPositions();
         metrics = botCsvReader.calculateMetrics(positions);
+        lastTradeTime = positions.reduce((latest, pos) => {
+          const candidate = pos.closeTime || pos.entryTime || 0;
+          return candidate > latest ? candidate : latest;
+        }, 0);
       } catch (e) {
         // CSV files may not exist yet for new bots
+      }
+
+      if (botState && 'lastTradeTime' in botState && typeof botState.lastTradeTime === 'number') {
+        lastTradeTime = Math.max(lastTradeTime, botState.lastTradeTime);
+      } else if (botState && 'assetPositions' in botState && botState.assetPositions) {
+        const assetTradeTimes = (botState as MultiAssetBotState).assetPositions.map((ap) => ap.lastTradeTime || 0);
+        const maxAssetTrade = assetTradeTimes.length > 0 ? Math.max(...assetTradeTimes) : 0;
+        lastTradeTime = Math.max(lastTradeTime, maxAssetTrade);
       }
 
       result[bot.id] = {
@@ -397,6 +410,7 @@ export function createDashboardApp(config: DashboardConfig): DashboardApp {
         state: botState ? {
           ...botState,
           openPositionCount,
+          lastTradeTime,
           performance: {
             totalTrades: metrics.totalTrades,
             totalPnL: metrics.totalPnL,

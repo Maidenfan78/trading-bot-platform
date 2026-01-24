@@ -1,9 +1,11 @@
-import { Connection, PublicKey, Keypair } from '@solana/web3.js';
-import { Signal, PositionLeg, Candle, SwapResult, Logger } from '../types';
-import { Broker, LiveBrokerConfig } from '../core/Broker';
+import type { PublicKey, Keypair } from '@solana/web3.js';
+import { Connection } from '@solana/web3.js';
+import type { Signal, PositionLeg, Candle, SwapResult, Logger } from '../types';
+import type { Broker, LiveBrokerConfig } from '../core/Broker';
 import { JupiterClient } from '../solana/jupiter';
 import { loadWallet, sendAndConfirmVersionedTransaction } from '../solana/wallet';
-import { canTrade, canClosePosition, BalanceConfig } from '../solana/balances';
+import type { BalanceConfig } from '../solana/balances';
+import { canTrade, canClosePosition } from '../solana/balances';
 import { createTwoLegPosition, updatePositions, closeRunnersOnTrimSignal } from '../strategy/position';
 
 /**
@@ -173,13 +175,14 @@ export class LiveBroker implements Broker {
       const avgPrice = totalUsdc / btcBought;
 
       // 7. Create position legs
-      const legs = createTwoLegPosition(
+      const createdLegs = createTwoLegPosition(
         { ...signal, price: avgPrice },
         this.config.tradeLegUsdc,
         this.config.atrTpMultiplier,
         this.config.atrTrailMultiplier,
         this.logger
       );
+      const legs = createdLegs.map((leg) => ({ ...leg, btcMint }));
 
       this.logger?.info('✓ Position opened', {
         btcBought: btcBought.toFixed(8),
@@ -217,8 +220,11 @@ export class LiveBroker implements Broker {
       });
 
       // 1. Determine which BTC mint this leg uses
-      // For simplicity, check both mints and use whichever has the balance
-      const btcMint = this.config.cbBtcMint || this.config.wbtcMint;
+      const btcMint = leg.btcMint || this.config.cbBtcMint || this.config.wbtcMint;
+      if (!btcMint) {
+        this.logger?.error('No BTC mint configured for closing position');
+        return;
+      }
 
       // 2. Check if we can close
       const closeCheck = await canClosePosition(

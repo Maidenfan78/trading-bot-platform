@@ -1,4 +1,4 @@
-import { Signal, PositionLeg, Candle, SwapResult } from '../types';
+import type { Signal, PositionLeg, Candle, SwapResult } from '../types';
 
 /**
  * Broker Interface

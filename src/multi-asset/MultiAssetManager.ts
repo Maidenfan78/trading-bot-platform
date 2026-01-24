@@ -1,4 +1,4 @@
-import { PositionLeg, AssetPositions, MultiAssetBotState, AssetConfig, AssetSignal, Logger } from '../types';
+import type { PositionLeg, AssetPositions, MultiAssetBotState, AssetConfig, AssetSignal, Logger } from '../types';
 import { getOpenLegs } from '../strategy/position';
 
 /**
@@ -64,7 +64,7 @@ export function updateAssetPositions(
  */
 export function getTotalOpenPositions(state: MultiAssetBotState): number {
   return state.assetPositions.reduce((total, ap) => {
-    return total + getOpenLegs(ap.openLegs).length;
+    return total + getOpenPositionCountForAsset(ap);
   }, 0);
 }
 
@@ -72,7 +72,22 @@ export function getTotalOpenPositions(state: MultiAssetBotState): number {
  * Get total number of open assets (assets with at least one open position)
  */
 export function getTotalOpenAssets(state: MultiAssetBotState): number {
-  return state.assetPositions.filter(ap => getOpenLegs(ap.openLegs).length > 0).length;
+  return state.assetPositions.filter(ap => getOpenPositionCountForAsset(ap) > 0).length;
+}
+
+/**
+ * Get number of open positions for a specific asset
+ */
+function getOpenPositionCountForAsset(assetPositions: AssetPositions): number {
+  const openLegs = getOpenLegs(assetPositions.openLegs);
+  const uniquePositions = new Set<string>();
+
+  for (const leg of openLegs) {
+    const positionKey = leg.positionId ?? `${assetPositions.asset}:${leg.entryTime}`;
+    uniquePositions.add(positionKey);
+  }
+
+  return uniquePositions.size;
 }
 
 /**
@@ -90,11 +105,11 @@ export function canAssetTrade(
   }
 
   // Check per-asset position limit
-  const assetOpenLegs = getOpenLegs(assetPos.openLegs);
-  if (assetOpenLegs.length >= config.maxPositionsPerAsset) {
+  const assetOpenPositions = getOpenPositionCountForAsset(assetPos);
+  if (assetOpenPositions >= config.maxPositionsPerAsset) {
     return {
       canTrade: false,
-      reason: `${assetSymbol} at max positions (${assetOpenLegs.length}/${config.maxPositionsPerAsset})`,
+      reason: `${assetSymbol} at max positions (${assetOpenPositions}/${config.maxPositionsPerAsset})`,
     };
   }
 
@@ -146,11 +161,12 @@ export function getMultiAssetSummary(state: MultiAssetBotState): string {
 
   for (const assetPos of state.assetPositions) {
     const openLegs = getOpenLegs(assetPos.openLegs);
+    const openPositions = getOpenPositionCountForAsset(assetPos);
     const tpLegs = openLegs.filter(l => l.type === 'TP');
     const runnerLegs = openLegs.filter(l => l.type === 'RUNNER');
 
     lines.push(`\n${assetPos.asset}:`);
-    lines.push(`  Open Positions: ${openLegs.length} (${tpLegs.length} TP, ${runnerLegs.length} Runner)`);
+    lines.push(`  Open Positions: ${openPositions} (${tpLegs.length} TP, ${runnerLegs.length} Runner)`);
 
     if (openLegs.length > 0) {
       for (const leg of openLegs) {

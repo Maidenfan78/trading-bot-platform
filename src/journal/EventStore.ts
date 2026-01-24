@@ -1,3 +1,4 @@
+/* eslint-disable no-console */
 /**
  * EventStore - Persistent storage for journal events
  *
@@ -7,7 +8,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import {
+import type {
   JournalEvent,
   EventDatabase,
   EventStoreConfig,

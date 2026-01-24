@@ -1,6 +1,7 @@
+/* eslint-disable no-console */
 import { exec } from 'child_process';
 import { promisify } from 'util';
-import { ServiceStatus } from '../types';
+import type { ServiceStatus } from '../types';
 
 const execAsync = promisify(exec);
 

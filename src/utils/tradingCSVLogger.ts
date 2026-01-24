@@ -1,6 +1,6 @@
 import fs from 'fs';
 import path from 'path';
-import { PositionLeg, Logger } from '../types';
+import type { PositionLeg, Logger } from '../types';
 
 /**
  * Trading CSV Logger for Position Trading Strategy

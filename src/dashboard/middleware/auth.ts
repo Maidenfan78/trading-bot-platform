@@ -1,4 +1,5 @@
-import { Request, Response, NextFunction } from 'express';
+/* eslint-disable no-console */
+import type { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcrypt';
 

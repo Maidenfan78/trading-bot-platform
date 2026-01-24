@@ -22,7 +22,7 @@
  * - Trend: line1 > line2 = Long trend, line1 < line2 = Short trend
  */
 
-import { Candle, TCF2Result } from '../types';
+import type { Candle, TCF2Result } from '../types';
 
 export interface TCF2State {
   // T3 smoothing state for line1

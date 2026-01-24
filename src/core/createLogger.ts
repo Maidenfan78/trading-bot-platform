@@ -1,7 +1,8 @@
+/* eslint-disable no-console */
 import winston from 'winston';
 import path from 'path';
 import fs from 'fs';
-import { Logger } from '../types';
+import type { Logger } from '../types';
 
 /**
  * Logger Configuration

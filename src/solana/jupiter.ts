@@ -1,6 +1,8 @@
-import { createJupiterApiClient, QuoteGetRequest } from '@jup-ag/api';
-import { Connection, PublicKey, VersionedTransaction } from '@solana/web3.js';
-import { QuoteResponse, Logger } from '../types';
+import type { QuoteGetRequest } from '@jup-ag/api';
+import { createJupiterApiClient } from '@jup-ag/api';
+import type { PublicKey} from '@solana/web3.js';
+import { Connection, VersionedTransaction } from '@solana/web3.js';
+import type { QuoteResponse, Logger } from '../types';
 
 /**
  * Jupiter DEX Integration

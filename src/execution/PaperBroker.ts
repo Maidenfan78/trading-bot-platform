@@ -1,5 +1,5 @@
-import { Signal, PositionLeg, Candle, Logger } from '../types';
-import { Broker, PaperAccount, PaperBrokerConfig, PaperTradeExecution } from '../core/Broker';
+import type { Signal, PositionLeg, Candle, Logger } from '../types';
+import type { Broker, PaperAccount, PaperBrokerConfig, PaperTradeExecution } from '../core/Broker';
 import { createTwoLegPosition, updatePositions, closeRunnersOnTrimSignal } from '../strategy/position';
 
 /**
@@ -165,8 +165,9 @@ export class PaperBroker implements Broker {
       return;
     }
 
+    const baseClosePrice = leg.closePrice ?? candle.close;
     // Apply slippage (selling BTC)
-    const fillPrice = this.applySlippage(candle.close, false);
+    const fillPrice = this.applySlippage(baseClosePrice, false);
 
     // Calculate USDC received
     const usdcReceived = leg.quantity * fillPrice;
@@ -193,7 +194,7 @@ export class PaperBroker implements Broker {
       price: fillPrice,
       usdcAmount: usdcReceived,
       btcAmount: -leg.quantity,
-      slippage: candle.close - fillPrice,
+      slippage: baseClosePrice - fillPrice,
     };
     this.tradeHistory.push(execution);
 
@@ -201,7 +202,7 @@ export class PaperBroker implements Broker {
       reason,
       entry: leg.entryPrice.toFixed(2),
       exit: fillPrice.toFixed(2),
-      slippage: (candle.close - fillPrice).toFixed(2),
+      slippage: (baseClosePrice - fillPrice).toFixed(2),
       profit: profit.toFixed(4),
       profitPct: profitPct.toFixed(2) + '%',
       usdcReceived: usdcReceived.toFixed(2),

@@ -1,21 +1,25 @@
+/* eslint-disable no-console */
 /**
  * Dashboard App Factory
  *
  * Creates a configured Express + Socket.IO dashboard application.
  */
 
-import express, { Application, Router, Request, Response } from 'express';
+import type { Application, Request, Response } from 'express';
+import express, { Router } from 'express';
 import cors from 'cors';
 import path from 'path';
-import { createServer, Server as HttpServer } from 'http';
+import type { Server as HttpServer } from 'http';
+import { createServer } from 'http';
 import { Server as SocketIOServer } from 'socket.io';
 import { readFileSync, existsSync, writeFileSync, promises as fs, mkdirSync } from 'fs';
 
-import {
+import type {
   DashboardConfig,
   BotConfig,
   BotState,
-  MultiAssetBotState,
+  MultiAssetBotState} from './types';
+import {
   INDICATORS,
   TIMEFRAMES,
 } from './types';
@@ -30,10 +34,11 @@ import {
   normalizeAssetName,
 } from './services';
 
-import {
-  EventStore,
+import type {
   JournalEventType,
-  JournalEventCategory,
+  JournalEventCategory} from '../journal/index.js';
+import {
+  EventStore
 } from '../journal/index.js';
 
 import {

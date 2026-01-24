@@ -1,6 +1,8 @@
-import { spawn, ChildProcess } from 'child_process';
+/* eslint-disable no-console */
+import type { ChildProcess } from 'child_process';
+import { spawn } from 'child_process';
 import { readFileSync, existsSync } from 'fs';
-import { LogEntry } from '../types';
+import type { LogEntry } from '../types';
 
 /**
  * Log Tailer Service

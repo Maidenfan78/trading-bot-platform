@@ -1,5 +1,5 @@
 import axios from 'axios';
-import { Candle, Logger } from '../types';
+import type { Candle, Logger } from '../types';
 
 /**
  * Binance API Integration for Candle Data

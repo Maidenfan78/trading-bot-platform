@@ -1,4 +1,4 @@
-import { Candle, MFIResult } from '../types';
+import type { Candle, MFIResult } from '../types';
 
 /**
  * Money Flow Index (MFI) calculation

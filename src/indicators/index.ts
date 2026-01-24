@@ -23,12 +23,13 @@ import {
   isValidATR,
 } from './atr.js';
 
+import type {
+  TCF2State} from './tcf2.js';
 import {
   initTCF2State,
   calculateTCF2Series,
   getTCF2Signal,
-  calculateTCF2WithSignal,
-  TCF2State,
+  calculateTCF2WithSignal
 } from './tcf2.js';
 
 import {

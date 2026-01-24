@@ -1,13 +1,14 @@
-import {
+import type {
   Connection,
+  SendOptions,
+  VersionedTransaction} from '@solana/web3.js';
+import {
   Keypair,
   PublicKey,
-  SendOptions,
-  VersionedTransaction,
   ConfirmOptions,
 } from '@solana/web3.js';
 import bs58 from 'bs58';
-import { Logger } from '../types';
+import type { Logger } from '../types';
 
 /**
  * Solana Transaction Utilities

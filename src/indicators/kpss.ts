@@ -23,7 +23,7 @@
  * - SHORT: stochastic crosses below signal
  */
 
-import { Candle, KPSSResult } from '../types';
+import type { Candle, KPSSResult } from '../types';
 
 /**
  * Simple Moving Average helper

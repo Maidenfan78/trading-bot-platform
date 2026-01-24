@@ -1,6 +1,6 @@
 import fs from 'fs';
 import path from 'path';
-import { Candle, Signal, PositionLeg, Logger } from '../types';
+import type { Candle, Signal, PositionLeg, Logger } from '../types';
 
 /**
  * CSV Logging Utilities

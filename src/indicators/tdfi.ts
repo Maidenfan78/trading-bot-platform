@@ -24,7 +24,7 @@
  * - SHORT: TDFI crosses below triggerDown
  */
 
-import { Candle, TDFIResult } from '../types';
+import type { Candle, TDFIResult } from '../types';
 
 /**
  * Custom iSmooth function from MT4 indicator

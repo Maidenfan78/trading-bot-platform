@@ -1,7 +1,8 @@
+/* eslint-disable no-console */
 import { readFileSync, readdirSync, existsSync } from 'fs';
 import { parse } from 'csv-parse/sync';
 import { join } from 'path';
-import { TradeEntry, PositionLeg, EquityPoint, BotConfig } from '../types';
+import type { TradeEntry, PositionLeg, EquityPoint, BotConfig } from '../types';
 
 /**
  * CSV Reader Service

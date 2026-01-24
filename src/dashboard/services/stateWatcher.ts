@@ -1,6 +1,8 @@
-import { watch, FSWatcher } from 'chokidar';
+/* eslint-disable no-console */
+import type { FSWatcher } from 'chokidar';
+import { watch } from 'chokidar';
 import { readFileSync, existsSync } from 'fs';
-import { BotState, MultiAssetBotState } from '../types';
+import type { BotState, MultiAssetBotState } from '../types';
 
 type StateChangeCallback = (botName: string, state: BotState | MultiAssetBotState) => void;
 

@@ -6,7 +6,7 @@
  */
 
 import { randomUUID } from 'crypto';
-import {
+import type {
   JournalEvent,
   JournalEventType,
   JournalEventCategory,
@@ -15,7 +15,7 @@ import {
   TrendDirection,
   VolatilityLevel,
 } from './types.js';
-import { EventStore } from './EventStore.js';
+import type { EventStore } from './EventStore.js';
 
 export interface JournalEmitterConfig {
   botId: string;

@@ -23,7 +23,7 @@
  * - SHORT: dss crosses below signal
  */
 
-import { Candle, DSSMOMResult } from '../types';
+import type { Candle, DSSMOMResult } from '../types';
 
 /**
  * EMA calculation helper

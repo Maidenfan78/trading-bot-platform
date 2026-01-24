@@ -1,4 +1,4 @@
-import { PositionLeg, LegType, Signal, Logger } from '../types';
+import type { PositionLeg, LegType, Signal, Logger } from '../types';
 import { calculateATRLevels, updateTrailingStop } from '../indicators/atr';
 
 /**
@@ -16,6 +16,13 @@ import { calculateATRLevels, updateTrailingStop } from '../indicators/atr';
  */
 function generateLegId(type: LegType, timestamp: number): string {
   return `${type}_${timestamp}_${Math.random().toString(36).substr(2, 9)}`;
+}
+
+/**
+ * Generate shared position ID for a two-leg position
+ */
+function generatePositionId(timestamp: number): string {
+  return `POS_${timestamp}_${Math.random().toString(36).substr(2, 9)}`;
 }
 
 /**
@@ -42,6 +49,7 @@ export function createTwoLegPosition(
   const entryPrice = signal.price;
   const atr = signal.atr;
   const timestamp = signal.timestamp;
+  const positionId = generatePositionId(timestamp);
 
   // Calculate levels
   const levels = calculateATRLevels(entryPrice, atr, tpMultiplier, trailMultiplier);
@@ -52,6 +60,7 @@ export function createTwoLegPosition(
   // Leg 1 - TP Leg
   const tpLeg: PositionLeg = {
     id: generateLegId('TP', timestamp),
+    positionId,
     type: 'TP',
     entryPrice,
     quantity,
@@ -64,6 +73,7 @@ export function createTwoLegPosition(
   // NO initial stop - only activates when TP leg closes (buy-and-hold mentality)
   const runnerLeg: PositionLeg = {
     id: generateLegId('RUNNER', timestamp),
+    positionId,
     type: 'RUNNER',
     entryPrice,
     quantity,

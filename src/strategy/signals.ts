@@ -1,4 +1,4 @@
-import { Signal, SignalType } from '../types';
+import type { Signal, SignalType } from '../types';
 
 /**
  * MFI Cross Signal Detection

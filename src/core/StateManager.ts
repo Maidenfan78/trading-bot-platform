@@ -1,5 +1,5 @@
 import fs from 'fs';
-import { Logger } from '../types';
+import type { Logger } from '../types';
 
 /**
  * Generic State Manager

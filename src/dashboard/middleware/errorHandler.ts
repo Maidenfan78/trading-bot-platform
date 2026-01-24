@@ -1,4 +1,5 @@
-import { Request, Response, NextFunction } from 'express';
+/* eslint-disable no-console */
+import type { Request, Response, NextFunction } from 'express';
 
 /**
  * Create global error handling middleware

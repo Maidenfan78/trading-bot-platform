@@ -89,6 +89,7 @@ export type LegType = 'TP' | 'RUNNER';
 
 export interface PositionLeg {
   id: string;
+  positionId?: string;       // Shared ID for multi-leg positions
   type: LegType;
   entryPrice: number;
   quantity: number;
@@ -101,6 +102,7 @@ export interface PositionLeg {
   closeTime?: number;
   closeReason?: string;
   asset?: string;            // For multi-asset bots
+  btcMint?: string;          // For live trading asset selection
 }
 
 export interface AssetPositions {

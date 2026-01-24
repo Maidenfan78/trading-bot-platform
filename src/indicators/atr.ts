@@ -1,4 +1,4 @@
-import { Candle, ATRResult } from '../types';
+import type { Candle, ATRResult } from '../types';
 
 /**
  * Average True Range (ATR) Calculation

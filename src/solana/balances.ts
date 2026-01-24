@@ -1,6 +1,7 @@
-import { Connection, PublicKey } from '@solana/web3.js';
-import { getAccount, getAssociatedTokenAddress, TOKEN_PROGRAM_ID } from '@solana/spl-token';
-import { BalanceInfo, Logger } from '../types';
+import type { Connection} from '@solana/web3.js';
+import { PublicKey } from '@solana/web3.js';
+import { getAccount, getAssociatedTokenAddress, getMint, TOKEN_PROGRAM_ID } from '@solana/spl-token';
+import type { BalanceInfo, Logger } from '../types';
 
 /**
  * Token Balance Management
@@ -11,6 +12,34 @@ import { BalanceInfo, Logger } from '../types';
 export interface BalanceConfig {
   minBtcBalance: number; // Minimum BTC to keep (never fully exit)
   minUsdcReserve: number; // Minimum USDC reserve (dry powder)
+}
+
+const mintDecimalsCache = new Map<string, number>();
+
+async function getMintDecimals(
+  connection: Connection,
+  mintPublicKey: PublicKey,
+  logger?: Logger
+): Promise<number> {
+  const mintStr = mintPublicKey.toBase58();
+  const cached = mintDecimalsCache.get(mintStr);
+  if (cached !== undefined) {
+    return cached;
+  }
+
+  try {
+    const mintInfo = await getMint(connection, mintPublicKey, 'confirmed');
+    mintDecimalsCache.set(mintStr, mintInfo.decimals);
+    return mintInfo.decimals;
+  } catch (error: any) {
+    logger?.warn('Failed to fetch mint decimals, falling back to defaults', {
+      mint: mintStr,
+      error: error.message,
+    });
+    const fallbackDecimals = isBtcToken(mintStr) ? 8 : 6;
+    mintDecimalsCache.set(mintStr, fallbackDecimals);
+    return fallbackDecimals;
+  }
 }
 
 /**
@@ -40,9 +69,7 @@ export async function getTokenBalance(
     );
 
     // Convert to human-readable amount
-    // BTC tokens use 8 decimals, USDC uses 6 decimals
-    const mintStr = mintPublicKey.toBase58();
-    const decimals = isBtcToken(mintStr) ? 8 : 6;
+    const decimals = await getMintDecimals(connection, mintPublicKey, logger);
 
     const balance = Number(tokenAccount.amount) / Math.pow(10, decimals);
 

@@ -1,3 +1,4 @@
+/* eslint-disable no-console */
 /**
  * Trade Journal Database Service
  * Uses JSON file for persistent storage of trade notes, tags, and metadata
@@ -5,7 +6,7 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
-import { JournalEntry, TradeTag } from '../types';
+import type { JournalEntry, TradeTag } from '../types';
 
 interface JournalDatabase {
   entries: JournalEntry[];

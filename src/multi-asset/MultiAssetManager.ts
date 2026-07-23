@@ -162,11 +162,13 @@ export function getMultiAssetSummary(state: MultiAssetBotState): string {
   for (const assetPos of state.assetPositions) {
     const openLegs = getOpenLegs(assetPos.openLegs);
     const openPositions = getOpenPositionCountForAsset(assetPos);
-    const tpLegs = openLegs.filter(l => l.type === 'TP');
-    const runnerLegs = openLegs.filter(l => l.type === 'RUNNER');
+    // Count by role, tolerating both leg-type vocabularies: the take-profit leg is
+    // TRADE (hold/trade model) or TP (legacy), the accumulation leg is HOLD or RUNNER.
+    const tradeLegs = openLegs.filter(l => l.type === 'TRADE' || l.type === 'TP');
+    const holdLegs = openLegs.filter(l => l.type === 'HOLD' || l.type === 'RUNNER');
 
     lines.push(`\n${assetPos.asset}:`);
-    lines.push(`  Open Positions: ${openPositions} (${tpLegs.length} TP, ${runnerLegs.length} Runner)`);
+    lines.push(`  Open Positions: ${openPositions} (${tradeLegs.length} trade, ${holdLegs.length} hold)`);
 
     if (openLegs.length > 0) {
       for (const leg of openLegs) {

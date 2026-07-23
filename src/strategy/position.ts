@@ -237,6 +237,101 @@ export function getClosedLegs(legs: PositionLeg[]): PositionLeg[] {
 }
 
 /**
+ * Get only retired position legs
+ *
+ * Retired legs left the bot but are still owned; they are not sales and never
+ * carry realised P&L. They are excluded from both getOpenLegs and getClosedLegs.
+ *
+ * @param legs - Array of all position legs
+ * @returns Array of only retired legs
+ */
+export function getRetiredLegs(legs: PositionLeg[]): PositionLeg[] {
+  return legs.filter((leg) => leg.status === 'RETIRED');
+}
+
+/**
+ * Graduate a leg to a HOLD leg (policy-neutral mechanism).
+ *
+ * Converts a leg into an accumulation (HOLD) leg without selling anything: the
+ * leg keeps its entry, quantity and OPEN status, and drops the trade-specific
+ * exit fields (target, trailing stop, high-water mark) because a HOLD leg has no
+ * exit. The original leg type is preserved in `graduatedFrom`.
+ *
+ * This function does NOT decide *when* to graduate — that is the caller's policy.
+ * It is a no-op passthrough (returning a copy) if the leg is already HOLD.
+ *
+ * @param leg - The leg to graduate
+ * @param opts - Optional timestamp/reason to record
+ * @param logger - Optional logger instance
+ * @returns A new HOLD leg (input is not mutated)
+ */
+export function graduateLeg(
+  leg: PositionLeg,
+  opts: { timestamp?: number; reason?: string } = {},
+  logger?: Logger
+): PositionLeg {
+  if (leg.type === 'HOLD') {
+    return { ...leg };
+  }
+
+  const graduated: PositionLeg = {
+    ...leg,
+    type: 'HOLD',
+    graduatedFrom: leg.type,
+    graduatedAt: opts.timestamp,
+  };
+
+  // A HOLD leg has no exit — strip trade-leg exit tracking.
+  delete graduated.targetPrice;
+  delete graduated.trailingStop;
+  delete graduated.highestPrice;
+
+  logger?.info('Leg graduated to HOLD:', {
+    id: leg.id,
+    from: leg.type,
+    reason: opts.reason,
+  });
+
+  return graduated;
+}
+
+/**
+ * Retire a leg (policy-neutral mechanism).
+ *
+ * Moves a leg to the terminal RETIRED state: it has left the bot but is still
+ * owned by the operator. Retirement is NOT a sale — this deliberately records no
+ * close price, close time or close reason, so a retired leg can never be booked
+ * as realised P&L. Use `closePrice`-based helpers only for genuine sales.
+ *
+ * This function does NOT decide *when* to retire — that is the caller's policy.
+ *
+ * @param leg - The leg to retire
+ * @param opts - Optional retirement timestamp/reason to record
+ * @param logger - Optional logger instance
+ * @returns A new RETIRED leg (input is not mutated)
+ */
+export function retireLeg(
+  leg: PositionLeg,
+  opts: { timestamp?: number; reason?: string } = {},
+  logger?: Logger
+): PositionLeg {
+  const retired: PositionLeg = {
+    ...leg,
+    status: 'RETIRED',
+    retireTime: opts.timestamp,
+    retireReason: opts.reason,
+  };
+
+  logger?.info('Leg retired (still owned, not sold):', {
+    id: leg.id,
+    type: leg.type,
+    reason: opts.reason,
+  });
+
+  return retired;
+}
+
+/**
  * Check if we should close runner legs on SHORT signal
  * (MFI crossing below 70 = trim signal)
  *

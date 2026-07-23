@@ -151,6 +151,9 @@ import {
   updatePositions,
   getOpenLegs,
   getClosedLegs,
+  getRetiredLegs,
+  graduateLeg,
+  retireLeg,
 } from 'trading-bot-platform';
 
 // Generate signal from MFI crossover
@@ -162,6 +165,25 @@ const legs = createTwoLegPosition(signal, atrTpMultiplier, atrTrailMultiplier);
 // Update positions with current price
 const updatedLegs = updatePositions(legs, currentPrice, atr, trailMult, breakEvenMult);
 ```
+
+#### Leg types, statuses and hold/graduate mechanisms
+
+`LegType` is `'TP' | 'RUNNER' | 'TRADE' | 'HOLD'` and `LegStatus` is
+`'OPEN' | 'CLOSED' | 'RETIRED'`. `TRADE`/`HOLD` support an accumulation-style model
+where a leg can leave the bot while still being owned:
+
+```typescript
+// Convert a leg into a never-sold HOLD (accumulation) leg. Drops the trade-leg
+// exit fields; records the original type in `graduatedFrom`. Status stays OPEN.
+const held = graduateLeg(tradeLeg, { timestamp, reason: 'expiry' });
+
+// Mark a leg RETIRED: it left the bot but was never sold, so it carries no close
+// price and never appears in realised P&L. `getRetiredLegs` returns these.
+const retired = retireLeg(held, { timestamp, reason: 'EXPIRED' });
+```
+
+These are policy-neutral mechanisms: the library moves legs between states but does
+not decide *when* to hold, stop out or graduate — that is the consuming bot's policy.
 
 ### Brokers
 

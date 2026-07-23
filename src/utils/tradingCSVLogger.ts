@@ -1,6 +1,6 @@
 import fs from 'fs';
 import path from 'path';
-import type { PositionLeg, Logger } from '../types';
+import type { PositionLeg, LegType, Logger } from '../types';
 
 /**
  * Trading CSV Logger for Position Trading Strategy
@@ -56,7 +56,7 @@ export interface TradeExit {
   timestamp: number;
   asset: string;
   legId: string;
-  legType: 'TP' | 'RUNNER';
+  legType: LegType;
   entryDate: string;
   entryPrice: number;
   exitPrice: number;
@@ -246,6 +246,13 @@ export function createTradingCSVLogger(config: TradingCSVLoggerConfig) {
     mode: 'PAPER' | 'LIVE',
     filename?: string
   ): void {
+    if (leg.status === 'RETIRED') {
+      // A retired leg left the bot but was never sold. Booking it as a trade
+      // exit would fabricate realised P&L for a sale that never happened.
+      logger?.warn('Refusing to log a RETIRED leg as a trade exit', { id: leg.id });
+      return;
+    }
+
     if (!leg.closePrice || !leg.closeTime) {
       logger?.warn('Cannot log leg closure - missing close data');
       return;

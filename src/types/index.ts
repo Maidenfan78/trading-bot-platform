@@ -85,7 +85,22 @@ export interface AssetSignal extends Signal {
 // Positions
 // ============================================================================
 
-export type LegType = 'TP' | 'RUNNER';
+// Leg types.
+//   TP / RUNNER  — legacy leg types for the take-profit + trailing-stop model.
+//   TRADE / HOLD — leg types for the two-leg hold/trade position model. A TRADE
+//                  leg takes profit at target; a HOLD leg is an accumulation leg
+//                  that a consumer never sells and retires (see LegStatus.RETIRED).
+// The library only defines these labels and the mechanisms to move between them
+// (graduateLeg/retireLeg). Whether a leg is ever sold, stopped out or graduated is
+// consumer policy, not library behaviour.
+export type LegType = 'TP' | 'RUNNER' | 'TRADE' | 'HOLD';
+
+// Leg lifecycle states.
+//   OPEN    — live in the bot.
+//   CLOSED  — sold; a close price and realised P&L are booked.
+//   RETIRED — left the bot but still owned by the operator. NOT a sale: a retired
+//             leg carries no close price and must never appear in realised P&L.
+export type LegStatus = 'OPEN' | 'CLOSED' | 'RETIRED';
 
 export interface PositionLeg {
   id: string;
@@ -94,13 +109,17 @@ export interface PositionLeg {
   entryPrice: number;
   quantity: number;
   entryTime: number;
-  targetPrice?: number;      // TP leg only
+  targetPrice?: number;      // TP / TRADE leg only
   trailingStop?: number;     // RUNNER leg only
   highestPrice?: number;     // RUNNER leg tracking
-  status: 'OPEN' | 'CLOSED';
+  status: LegStatus;
   closePrice?: number;
   closeTime?: number;
   closeReason?: string;
+  retireTime?: number;       // RETIRED leg: when it left the bot (no sale)
+  retireReason?: string;     // RETIRED leg: why it was retired
+  graduatedFrom?: LegType;   // HOLD leg produced by graduateLeg: its original type
+  graduatedAt?: number;      // HOLD leg produced by graduateLeg: when it graduated
   asset?: string;            // For multi-asset bots
   btcMint?: string;          // For live trading asset selection
 }

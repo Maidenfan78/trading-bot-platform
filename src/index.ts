@@ -178,6 +178,10 @@ export type {
   CircuitBreakerState,
 } from './execution';
 
+// The asset a trade executes against - mint + real decimals. Passing this to
+// openPosition is what stops a multi-asset bot filling every signal with BTC.
+export type { TradeAsset } from './core/Broker';
+
 // ============================================================================
 // Data Fetching
 // ============================================================================

@@ -133,6 +133,48 @@ export async function getAllBalances(
 }
 
 /**
+ * Check if the wallet can trade a specific asset.
+ *
+ * `canTrade` below only ever looks at USDC + cbBTC + WBTC, so for a wETH/SOL/JUP
+ * bot nothing verified the asset actually held (BUG-028). This checks USDC for the
+ * buy and reports the target mint's own balance, with decimals resolved from the
+ * chain rather than assumed.
+ */
+export async function canTradeAsset(
+  connection: Connection,
+  walletPublicKey: PublicKey,
+  usdcMint: string,
+  assetMint: string,
+  tradeSizeUsdc: number,
+  config: BalanceConfig,
+  logger?: Logger
+): Promise<{ canTrade: boolean; reason?: string; usdc: number; asset: number }> {
+  try {
+    const [usdc, asset] = await Promise.all([
+      getTokenBalance(connection, walletPublicKey, new PublicKey(usdcMint), logger),
+      getTokenBalance(connection, walletPublicKey, new PublicKey(assetMint), logger),
+    ]);
+
+    const totalRequired = tradeSizeUsdc * 2; // hold + trade leg
+    const available = usdc - config.minUsdcReserve;
+
+    if (available < totalRequired) {
+      return {
+        canTrade: false,
+        reason: `Insufficient USDC. Need ${totalRequired.toFixed(2)}, have ${available.toFixed(2)} available (keeping ${config.minUsdcReserve} reserve)`,
+        usdc,
+        asset,
+      };
+    }
+
+    return { canTrade: true, usdc, asset };
+  } catch (error: any) {
+    logger?.error('Asset trade validation failed:', error.message);
+    return { canTrade: false, reason: `Balance check error: ${error.message}`, usdc: 0, asset: 0 };
+  }
+}
+
+/**
  * Check if wallet can execute a trade
  */
 export async function canTrade(

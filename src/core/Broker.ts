@@ -1,6 +1,20 @@
 import type { Signal, PositionLeg, Candle, SwapResult } from '../types';
 
 /**
+ * The asset a trade executes against.
+ *
+ * `openPosition` used to take no asset at all, so a live multi-asset bot bought
+ * whatever the broker was configured for — BTC — regardless of which asset
+ * signalled (BUG-025). `decimals` is carried alongside the mint because assuming
+ * 8 mis-scales every asset that is not 8 (BUG-026).
+ */
+export interface TradeAsset {
+  symbol?: string;
+  mint: string;
+  decimals: number;
+}
+
+/**
  * Broker Interface
  *
  * Defines the contract for trade execution brokers.
@@ -14,7 +28,11 @@ export interface Broker {
    * @param candle - Current candle for price reference
    * @returns Array of position legs created, or null if failed
    */
-  openPosition(signal: Signal, candle: Candle): Promise<PositionLeg[] | null>;
+  openPosition(
+    signal: Signal,
+    candle: Candle,
+    asset?: TradeAsset
+  ): Promise<PositionLeg[] | null>;
 
   /**
    * Close a specific position leg

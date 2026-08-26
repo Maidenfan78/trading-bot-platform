@@ -1,11 +1,11 @@
 import type { PublicKey, Keypair } from '@solana/web3.js';
 import { Connection } from '@solana/web3.js';
 import type { Signal, PositionLeg, Candle, SwapResult, Logger } from '../types';
-import type { Broker, LiveBrokerConfig } from '../core/Broker';
+import type { Broker, LiveBrokerConfig, TradeAsset } from '../core/Broker';
 import { JupiterClient } from '../solana/jupiter';
 import { loadWallet, sendAndConfirmVersionedTransaction } from '../solana/wallet';
 import type { BalanceConfig } from '../solana/balances';
-import { canTrade, canClosePosition } from '../solana/balances';
+import { canTrade, canTradeAsset, canClosePosition } from '../solana/balances';
 import { createTwoLegPosition, updatePositions, closeRunnersOnTrimSignal } from '../strategy/position';
 
 /**
@@ -70,7 +70,11 @@ export class LiveBroker implements Broker {
   /**
    * Open a two-leg position with real BTC purchase
    */
-  async openPosition(signal: Signal, candle: Candle): Promise<PositionLeg[] | null> {
+  async openPosition(
+    signal: Signal,
+    candle: Candle,
+    asset?: TradeAsset
+  ): Promise<PositionLeg[] | null> {
     if (signal.type !== 'LONG') {
       this.logger?.warn('Cannot open position on non-LONG signal');
       return null;
@@ -83,43 +87,73 @@ export class LiveBroker implements Broker {
         mfi: signal.mfi.toFixed(2),
       });
 
-      // 1. Check if we can trade
-      const tradeCheck = await canTrade(
-        this.connection,
-        this.wallet.publicKey,
-        this.config.usdcMint,
-        this.config.cbBtcMint,
-        this.config.wbtcMint,
-        this.config.tradeLegUsdc,
-        this.getBalanceConfig(),
-        this.logger
-      );
+      // 1. Check if we can trade. When the caller names an asset we check that
+      //    asset's own mint; the legacy path only ever knew about cbBTC/WBTC.
+      if (asset) {
+        const assetCheck = await canTradeAsset(
+          this.connection,
+          this.wallet.publicKey,
+          this.config.usdcMint,
+          asset.mint,
+          this.config.tradeLegUsdc,
+          this.getBalanceConfig(),
+          this.logger
+        );
 
-      if (!tradeCheck.canTrade) {
-        this.logger?.error('Trade rejected - insufficient balance:', tradeCheck.reason);
-        return null;
+        if (!assetCheck.canTrade) {
+          this.logger?.error('Trade rejected - insufficient balance:', assetCheck.reason);
+          return null;
+        }
+
+        this.logger?.info('Balance check passed', {
+          asset: asset.symbol ?? asset.mint,
+          usdcBalance: assetCheck.usdc.toFixed(2),
+          assetBalance: assetCheck.asset,
+        });
+      } else {
+        const tradeCheck = await canTrade(
+          this.connection,
+          this.wallet.publicKey,
+          this.config.usdcMint,
+          this.config.cbBtcMint,
+          this.config.wbtcMint,
+          this.config.tradeLegUsdc,
+          this.getBalanceConfig(),
+          this.logger
+        );
+
+        if (!tradeCheck.canTrade) {
+          this.logger?.error('Trade rejected - insufficient balance:', tradeCheck.reason);
+          return null;
+        }
+
+        this.logger?.info('Balance check passed', {
+          usdcBalance: tradeCheck.usdc.toFixed(2),
+          btcBalance: tradeCheck.btc.toFixed(8),
+        });
       }
 
-      this.logger?.info('✓ Balance check passed', {
-        usdcBalance: tradeCheck.usdc.toFixed(2),
-        btcBalance: tradeCheck.btc.toFixed(8),
-      });
-
-      // 2. Get quote from Jupiter (tries cbBTC first, falls back to WBTC)
+      // 2. Get quote from Jupiter. With a named asset we quote that exact mint;
+      //    without one we keep the legacy cbBTC-then-WBTC behaviour for the BTC bot.
       const totalUsdc = this.config.tradeLegUsdc * 2; // Two legs
-      const quoteResult = await this.jupiterClient.getQuoteUsdcToBtc(totalUsdc);
+      const quoteResult = asset
+        ? await this.jupiterClient.getQuoteUsdcToToken(totalUsdc, asset.mint, asset.decimals)
+        : await this.jupiterClient.getQuoteUsdcToBtc(totalUsdc);
 
       if (!quoteResult) {
         this.logger?.error('Failed to get quote from Jupiter');
         return null;
       }
 
-      const { quote, btcMint } = quoteResult;
+      const quote = quoteResult.quote;
+      const filledMint = asset ? asset.mint : (quoteResult as { btcMint: string }).btcMint;
+      const filledDecimals = asset ? asset.decimals : 8;
 
-      this.logger?.info('✓ Quote received', {
+      this.logger?.info('Quote received', {
         inputUsdc: totalUsdc,
-        outputBtc: (Number(quote.outAmount) / 1e8).toFixed(8),
-        btcMint,
+        outputQty: Number(quote.outAmount) / Math.pow(10, filledDecimals),
+        mint: filledMint,
+        decimals: filledDecimals,
         priceImpact: quote.priceImpactPct + '%',
       });
 
@@ -170,9 +204,11 @@ export class LiveBroker implements Broker {
         explorer: `https://solscan.io/tx/${result.signature}`,
       });
 
-      // 6. Calculate actual execution details
-      const btcBought = Number(quote.outAmount) / 1e8;
-      const avgPrice = totalUsdc / btcBought;
+      // 6. Calculate actual execution details. Scale by the mint's real decimals
+      //    rather than a hardcoded 1e8 - SOL is 9 and JUP is 6, and avgPrice feeds
+      //    the TP target, so getting this wrong corrupts the position (BUG-026).
+      const qtyBought = Number(quote.outAmount) / Math.pow(10, filledDecimals);
+      const avgPrice = totalUsdc / qtyBought;
 
       // 7. Create position legs
       const createdLegs = createTwoLegPosition(
@@ -182,10 +218,16 @@ export class LiveBroker implements Broker {
         this.config.atrTrailMultiplier,
         this.logger
       );
-      const legs = createdLegs.map((leg) => ({ ...leg, btcMint }));
+      const legs = createdLegs.map((leg) => ({
+        ...leg,
+        mint: filledMint,
+        decimals: filledDecimals,
+        btcMint: filledMint, // legacy field, kept so old readers still resolve a mint
+      }));
 
-      this.logger?.info('✓ Position opened', {
-        btcBought: btcBought.toFixed(8),
+      this.logger?.info('Position opened', {
+        qtyBought,
+        mint: filledMint,
         avgPrice: avgPrice.toFixed(2),
         tpTarget: legs[0].targetPrice?.toFixed(2),
         trailingStop: legs[1].trailingStop?.toFixed(2),
@@ -219,18 +261,25 @@ export class LiveBroker implements Broker {
         quantity: leg.quantity.toFixed(8),
       });
 
-      // 1. Determine which BTC mint this leg uses
-      const btcMint = leg.btcMint || this.config.cbBtcMint || this.config.wbtcMint;
-      if (!btcMint) {
-        this.logger?.error('No BTC mint configured for closing position');
+      // 1. Which mint does this leg actually hold? Never fall back to a configured
+      //    BTC mint: a leg whose mint is unknown is a leg we have no business
+      //    selling, and guessing disposes of the wrong asset for real (BUG-027).
+      const mint = leg.mint || leg.btcMint;
+      if (!mint) {
+        this.logger?.error(
+          'Refusing to close leg: no mint recorded on it. Selling a guessed mint would ' +
+          'dispose of the wrong asset.',
+          { legId: leg.id, asset: leg.asset }
+        );
         return;
       }
+      const decimals = leg.decimals ?? 8;
 
       // 2. Check if we can close
       const closeCheck = await canClosePosition(
         this.connection,
         this.wallet.publicKey,
-        btcMint,
+        mint,
         leg.quantity,
         this.getBalanceConfig(),
         this.logger
@@ -243,8 +292,8 @@ export class LiveBroker implements Broker {
 
       this.logger?.info('✓ Balance check passed - can close position');
 
-      // 3. Get quote for BTC → USDC
-      const quote = await this.jupiterClient.getQuoteBtcToUsdc(leg.quantity, btcMint);
+      // 3. Get quote for asset → USDC, scaled by this leg's real decimals
+      const quote = await this.jupiterClient.getQuoteTokenToUsdc(leg.quantity, mint, decimals);
 
       if (!quote) {
         this.logger?.error('Failed to get quote from Jupiter');

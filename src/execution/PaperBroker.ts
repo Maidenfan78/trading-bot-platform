@@ -1,5 +1,5 @@
 import type { Signal, PositionLeg, Candle, Logger } from '../types';
-import type { Broker, PaperAccount, PaperBrokerConfig, PaperTradeExecution } from '../core/Broker';
+import type { Broker, TradeAsset, PaperAccount, PaperBrokerConfig, PaperTradeExecution } from '../core/Broker';
 import { createTwoLegPosition, updatePositions, closeRunnersOnTrimSignal } from '../strategy/position';
 
 /**
@@ -95,7 +95,11 @@ export class PaperBroker implements Broker {
   /**
    * Simulate opening a two-leg position
    */
-  async openPosition(signal: Signal, candle: Candle): Promise<PositionLeg[] | null> {
+  async openPosition(
+    signal: Signal,
+    candle: Candle,
+    asset?: TradeAsset
+  ): Promise<PositionLeg[] | null> {
     if (signal.type !== 'LONG') {
       this.logger?.warn('Cannot open position on non-LONG signal');
       return null;
@@ -123,6 +127,16 @@ export class PaperBroker implements Broker {
       this.config.atrTrailMultiplier ?? 2.5,
       this.logger
     );
+
+    // Record which asset these legs represent, so a state file built in paper can
+    // be read by the live broker without it having to guess a mint (BUG-027).
+    if (asset) {
+      for (const leg of legs) {
+        leg.mint = asset.mint;
+        leg.decimals = asset.decimals;
+        leg.btcMint = asset.mint; // legacy field, kept for old readers
+      }
+    }
 
     // Calculate total BTC bought
     const totalBtc = legs.reduce((sum, leg) => sum + leg.quantity, 0);

@@ -121,7 +121,10 @@ export interface PositionLeg {
   graduatedFrom?: LegType;   // HOLD leg produced by graduateLeg: its original type
   graduatedAt?: number;      // HOLD leg produced by graduateLeg: when it graduated
   asset?: string;            // For multi-asset bots
-  btcMint?: string;          // For live trading asset selection
+  mint?: string;             // Mint actually bought, recorded at fill (BUG-025)
+  decimals?: number;         // That mint's real decimals, recorded at fill (BUG-026)
+  /** @deprecated Legacy name from the BTC-only era. Read for old state; write `mint`. */
+  btcMint?: string;
 }
 
 export interface AssetPositions {
@@ -158,6 +161,7 @@ export interface AssetConfig {
   name: string;
   binanceSymbol: string;
   solanaMint?: string;
+  solanaDecimals?: number;   // Real decimals for solanaMint (9 wSOL, 6 JUP, 8 wETH/WBTC)
   tradeLegUsdc: number;
   enabled: boolean;
 }

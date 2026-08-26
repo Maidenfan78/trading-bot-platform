@@ -41,6 +41,80 @@ export class JupiterClient {
   }
 
   /**
+   * Get quote for USDC → an arbitrary SPL token.
+   *
+   * Unlike `getQuoteUsdcToBtc` this does no cbBTC/WBTC guessing: the caller names
+   * the mint, so a wETH signal can never be filled with BTC (BUG-025). `decimals`
+   * is the mint's real decimal count — 9 for wSOL, 6 for JUP, 8 for wETH/WBTC —
+   * and is required rather than assumed, because assuming 8 mis-scales quantity
+   * and price for every asset that is not 8 (BUG-026).
+   */
+  async getQuoteUsdcToToken(
+    usdcAmount: number,
+    mint: string,
+    decimals: number
+  ): Promise<{ quote: QuoteResponse; mint: string; decimals: number } | null> {
+    this.logger?.info(`Requesting quote: ${usdcAmount} USDC → ${mint}`);
+
+    const usdcLamports = Math.floor(usdcAmount * 1_000_000);
+
+    try {
+      const quote = await this.getQuote(this.config.usdcMint, mint, usdcLamports);
+
+      if (quote && this.isQuoteAcceptable(quote)) {
+        this.logger?.info('Quote accepted', {
+          mint,
+          decimals,
+          priceImpact: quote.priceImpactPct.toFixed(4) + '%',
+          outAmount: quote.outAmount,
+        });
+        return { quote, mint, decimals };
+      }
+
+      this.logger?.warn('Quote rejected (price impact too high or failed)', { mint });
+    } catch (error: any) {
+      this.logger?.error('Quote failed:', error.message);
+    }
+
+    return null;
+  }
+
+  /**
+   * Get quote for an arbitrary SPL token → USDC.
+   *
+   * `decimals` must be the mint's real decimal count for the same reason as above:
+   * scaling a 9-decimal wSOL amount by 1e8 sells a tenth of what was intended.
+   */
+  async getQuoteTokenToUsdc(
+    amount: number,
+    mint: string,
+    decimals: number
+  ): Promise<QuoteResponse | null> {
+    this.logger?.info(`Requesting quote: ${amount} ${mint} → USDC`);
+
+    const lamports = Math.floor(amount * Math.pow(10, decimals));
+
+    try {
+      const quote = await this.getQuote(mint, this.config.usdcMint, lamports);
+
+      if (quote && this.isQuoteAcceptable(quote)) {
+        this.logger?.info('Token → USDC quote accepted', {
+          mint,
+          priceImpact: quote.priceImpactPct.toFixed(4) + '%',
+          outAmount: quote.outAmount,
+        });
+        return quote;
+      }
+
+      this.logger?.warn('Token → USDC quote rejected (price impact too high)', { mint });
+    } catch (error: any) {
+      this.logger?.error('Token → USDC quote failed:', error.message);
+    }
+
+    return null;
+  }
+
+  /**
    * Get quote for USDC → BTC swap
    * Tries cbBTC first, falls back to WBTC if quote fails or price impact too high
    */

@@ -131,6 +131,28 @@ describe('EventStore durability', () => {
     expect(ids).not.toContain('ancient');
   });
 
+  it('archive() keeps events another process appended since it loaded', () => {
+    const archiver = new EventStore({
+      dataDir,
+      archiveAfterDays: 30,
+      flushThreshold: 1,
+    });
+    const old = Date.now() - 60 * 24 * 60 * 60 * 1000;
+    archiver.append(makeEvent('ancient', old));
+
+    // A second bot writes while the archiver holds a stale in-memory view.
+    const otherBot = new EventStore({ dataDir, flushThreshold: 1 });
+    otherBot.append(makeEvent('written-during-archive', Date.now()));
+
+    archiver.archive();
+
+    // archive() writes with merge:false, so without refreshing from disk first
+    // it would clobber the other bot's event.
+    const ids = readEvents(dataDir).map((e) => e.id);
+    expect(ids).toContain('written-during-archive');
+    expect(ids).not.toContain('ancient');
+  });
+
   it('clear() empties the file rather than merging it back', () => {
     const store = new EventStore({ dataDir, flushThreshold: 1 });
     store.append(makeEvent('doomed', 1000));

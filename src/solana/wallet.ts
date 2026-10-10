@@ -39,6 +39,68 @@ export function loadWallet(secretKey: string, logger?: Logger): Keypair {
 /**
  * Send and confirm versioned transaction with retries
  */
+/**
+ * Outcome of sending a transaction.
+ *
+ * `unresolved` is the important one: it means we sent a transaction and could
+ * NOT determine whether it landed. That is not the same as failure, and
+ * treating it as failure is what caused BUG-030 - an orphaned buy where the
+ * wallet spent USDC and held coins while the bot recorded no position, so no
+ * take-profit could ever fire, nothing reached the accumulation ledger, and the
+ * free slot invited a second buy.
+ */
+export interface SendTransactionResult {
+  /** Always populated once anything was sent, even on failure. */
+  signature: string;
+  success: boolean;
+  /** Sent, but its fate is unknown. Requires reconciliation, not a retry. */
+  unresolved?: boolean;
+  error?: string;
+}
+
+/**
+ * Ask the chain what actually happened to a signature.
+ *
+ * `searchTransactionHistory` matters: by default the RPC only knows recent
+ * signatures held in cache, and a confirmation timeout is exactly the case
+ * where the status has aged out of it.
+ */
+async function resolveSignatureFate(
+  connection: Connection,
+  signature: string,
+  logger?: Logger
+): Promise<'confirmed' | 'failed' | 'unknown'> {
+  try {
+    const status = await connection.getSignatureStatus(signature, {
+      searchTransactionHistory: true,
+    });
+    const value = status?.value;
+    if (!value) return 'unknown';
+    if (value.err) {
+      logger?.error('Transaction landed but failed on-chain:', {
+        signature,
+        err: JSON.stringify(value.err),
+      });
+      return 'failed';
+    }
+    if (
+      value.confirmationStatus === 'confirmed' ||
+      value.confirmationStatus === 'finalized' ||
+      (typeof value.confirmations === 'number' && value.confirmations > 0) ||
+      value.confirmations === null // null means finalized (rooted)
+    ) {
+      return 'confirmed';
+    }
+    return 'unknown';
+  } catch (error: any) {
+    logger?.warn('Could not query signature status:', {
+      signature,
+      error: error.message,
+    });
+    return 'unknown';
+  }
+}
+
 export async function sendAndConfirmVersionedTransaction(
   connection: Connection,
   transaction: VersionedTransaction,
@@ -49,7 +111,7 @@ export async function sendAndConfirmVersionedTransaction(
     commitment?: 'processed' | 'confirmed' | 'finalized';
   },
   logger?: Logger
-): Promise<{ signature: string; success: boolean; error?: string }> {
+): Promise<SendTransactionResult> {
   const maxRetries = options?.maxRetries ?? 3;
   const skipPreflight = options?.skipPreflight ?? false;
   const commitment = options?.commitment ?? 'confirmed';
@@ -60,14 +122,18 @@ export async function sendAndConfirmVersionedTransaction(
     maxRetries,
   });
 
-  let lastError: string = '';
+  let lastError = '';
+  // Retained across attempts so a failure can still report WHAT was sent.
+  // Returning an empty signature is what made an orphaned buy uninvestigable.
+  let lastSignature = '';
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
-      // Sign transaction
+      // Re-signing the same message yields the same signature, so a resend is
+      // idempotent: Solana rejects the duplicate rather than executing twice.
+      // That is why this loop cannot double-buy.
       transaction.sign([wallet]);
 
-      // Send transaction
       const sendOptions: SendOptions = {
         skipPreflight,
         maxRetries: 0, // We handle retries ourselves
@@ -75,30 +141,50 @@ export async function sendAndConfirmVersionedTransaction(
       };
 
       const signature = await connection.sendTransaction(transaction, sendOptions);
+      lastSignature = signature;
 
       logger?.info(`Transaction sent (attempt ${attempt}/${maxRetries}):`, {
         signature,
       });
 
-      // Confirm transaction
       const confirmation = await connection.confirmTransaction(signature, commitment);
 
       if (confirmation.value.err) {
+        // Definitive: it executed and failed, so nothing moved (Solana applies
+        // a transaction atomically). Resending the identical signature cannot
+        // succeed, so retrying here only wastes the blockhash window.
         lastError = `Transaction failed: ${JSON.stringify(confirmation.value.err)}`;
-        logger?.error(lastError);
-
-        if (attempt < maxRetries) {
-          logger?.info(`Retrying... (${attempt}/${maxRetries})`);
-          await sleep(2000 * attempt); // Exponential backoff
-          continue;
-        }
-      } else {
-        logger?.info('✓ Transaction confirmed:', { signature });
-        return { signature, success: true };
+        logger?.error(lastError, { signature });
+        return { signature, success: false, error: lastError };
       }
+
+      logger?.info('✓ Transaction confirmed:', { signature });
+      return { signature, success: true };
     } catch (error: any) {
       lastError = error.message;
       logger?.error(`Transaction attempt ${attempt} failed:`, lastError);
+
+      // A throw from confirmTransaction is usually a TIMEOUT, which does not
+      // mean the transaction failed - it routinely means "landed, but the RPC
+      // stopped waiting". Ask the chain before deciding anything.
+      if (lastSignature) {
+        const fate = await resolveSignatureFate(connection, lastSignature, logger);
+        if (fate === 'confirmed') {
+          logger?.info(
+            '✓ Confirmation timed out, but the transaction DID land - treating as success.',
+            { signature: lastSignature }
+          );
+          return { signature: lastSignature, success: true };
+        }
+        if (fate === 'failed') {
+          return {
+            signature: lastSignature,
+            success: false,
+            error: `Transaction landed but failed on-chain: ${lastError}`,
+          };
+        }
+        // 'unknown' - fall through and retry; the resend is idempotent.
+      }
 
       if (attempt < maxRetries) {
         logger?.info(`Retrying... (${attempt}/${maxRetries})`);
@@ -108,10 +194,37 @@ export async function sendAndConfirmVersionedTransaction(
     }
   }
 
+  // Out of attempts. If we ever got a signature out the door, its fate is
+  // unknown rather than known-bad, and the caller MUST treat that as needing
+  // reconciliation: the wallet may hold coins this process never recorded.
+  if (lastSignature) {
+    const fate = await resolveSignatureFate(connection, lastSignature, logger);
+    if (fate === 'confirmed') {
+      logger?.info('✓ Late confirmation found for the last signature - treating as success.', {
+        signature: lastSignature,
+      });
+      return { signature: lastSignature, success: true };
+    }
+    if (fate === 'unknown') {
+      logger?.error(
+        'UNRESOLVED TRANSACTION - sent but its fate is unknown. The wallet may hold ' +
+          'coins that were never recorded. Reconcile against the wallet before trading ' +
+          'this asset again.',
+        { signature: lastSignature, explorer: `https://solscan.io/tx/${lastSignature}` }
+      );
+      return {
+        signature: lastSignature,
+        success: false,
+        unresolved: true,
+        error: lastError || 'Confirmation never resolved',
+      };
+    }
+  }
+
   return {
-    signature: '',
+    signature: lastSignature,
     success: false,
-    error: lastError || 'Transaction failed after max retries',
+    error: lastError,
   };
 }
 

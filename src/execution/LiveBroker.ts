@@ -1,11 +1,12 @@
-import type { PublicKey, Keypair } from '@solana/web3.js';
-import { Connection } from '@solana/web3.js';
+import type { Keypair } from '@solana/web3.js';
+import { Connection, PublicKey } from '@solana/web3.js';
 import type { Signal, PositionLeg, Candle, SwapResult, Logger } from '../types';
 import type { Broker, LiveBrokerConfig, TradeAsset } from '../core/Broker';
 import { JupiterClient } from '../solana/jupiter';
 import { loadWallet, sendAndConfirmVersionedTransaction } from '../solana/wallet';
 import type { BalanceConfig } from '../solana/balances';
-import { canTrade, canTradeAsset, canClosePosition } from '../solana/balances';
+import { canTrade, canTradeAsset, canClosePosition, getTokenBalance } from '../solana/balances';
+import { reconcileFilledQuantity } from './fillReconciliation';
 import { createTwoLegPosition, updatePositions, closeRunnersOnTrimSignal } from '../strategy/position';
 
 /**
@@ -180,7 +181,28 @@ export class LiveBroker implements Broker {
 
       this.logger?.info('✓ Swap transaction built');
 
-      // 5. Execute swap
+      // 5. Execute swap.
+      //
+      // Read the destination balance FIRST. The fill has to be measured, not
+      // taken from the quote (BUG-031), and it has to be measured with the same
+      // instrument that will later check it at sell time - canClosePosition
+      // also uses getTokenBalance - so the recorded quantity and that check
+      // agree by construction instead of by luck.
+      let balanceBefore: number | null = null;
+      try {
+        balanceBefore = await getTokenBalance(
+          this.connection,
+          this.wallet.publicKey,
+          new PublicKey(filledMint),
+          this.logger
+        );
+      } catch (error: any) {
+        this.logger?.warn(
+          'Could not read the pre-swap balance; the fill will have to fall back to the quote.',
+          { mint: filledMint, error: error.message }
+        );
+      }
+
       this.logger?.info('📤 Sending transaction to Solana...');
 
       const result = await sendAndConfirmVersionedTransaction(
@@ -195,7 +217,31 @@ export class LiveBroker implements Broker {
       );
 
       if (!result.success) {
-        this.logger?.error('Swap transaction failed:', result.error);
+        if (result.unresolved) {
+          // Sent, fate unknown. This is NOT "it did not happen": the wallet may
+          // hold coins this process never recorded, with no leg, no TP, and no
+          // ledger entry (BUG-030). Returning null is still the only honest
+          // option - we cannot invent a quantity - but it must be impossible to
+          // miss in the logs, and the signature must survive so it can be
+          // looked up.
+          this.logger?.error(
+            'RECONCILE REQUIRED - swap was sent but never resolved. The wallet may hold ' +
+              'coins with no position recorded against them: no take-profit will fire and ' +
+              'the accumulation ledger has no cost basis for them. Check the signature ' +
+              'before letting this asset trade again.',
+            {
+              signature: result.signature,
+              explorer: `https://solscan.io/tx/${result.signature}`,
+              mint: filledMint,
+              usdcCommitted: totalUsdc,
+            }
+          );
+        } else {
+          this.logger?.error('Swap transaction failed:', {
+            error: result.error,
+            signature: result.signature || '(never sent)',
+          });
+        }
         return null;
       }
 
@@ -204,11 +250,59 @@ export class LiveBroker implements Broker {
         explorer: `https://solscan.io/tx/${result.signature}`,
       });
 
-      // 6. Calculate actual execution details. Scale by the mint's real decimals
+      // 6. Work out what actually filled. Scale by the mint's real decimals
       //    rather than a hardcoded 1e8 - SOL is 9 and JUP is 6, and avgPrice feeds
       //    the TP target, so getting this wrong corrupts the position (BUG-026).
-      const qtyBought = Number(quote.outAmount) / Math.pow(10, filledDecimals);
+      const quotedQty = Number(quote.outAmount) / Math.pow(10, filledDecimals);
+
+      let measuredDelta: number | null = null;
+      if (balanceBefore !== null) {
+        try {
+          const balanceAfter = await getTokenBalance(
+            this.connection,
+            this.wallet.publicKey,
+            new PublicKey(filledMint),
+            this.logger
+          );
+          measuredDelta = balanceAfter - balanceBefore;
+        } catch (error: any) {
+          this.logger?.warn('Could not read the post-swap balance.', {
+            mint: filledMint,
+            error: error.message,
+          });
+        }
+      }
+
+      const fill = reconcileFilledQuantity(quotedQty, measuredDelta);
+      if (fill.warning) {
+        // Loud on purpose: the leg is about to carry an estimated quantity, so
+        // holdings and cost basis are approximate until reconciled.
+        this.logger?.error(`Fill quantity is an ESTIMATE: ${fill.warning}`, {
+          signature: result.signature,
+          mint: filledMint,
+          quotedQty,
+          measuredDelta,
+        });
+      }
+
+      const qtyBought = fill.quantity;
+      if (!(qtyBought > 0)) {
+        this.logger?.error(
+          'RECONCILE REQUIRED - swap confirmed but no usable fill quantity could be ' +
+            'determined, so no position can be recorded against coins the wallet now holds.',
+          { signature: result.signature, mint: filledMint, quotedQty, measuredDelta }
+        );
+        return null;
+      }
+
       const avgPrice = totalUsdc / qtyBought;
+
+      this.logger?.info('Fill measured', {
+        source: fill.source,
+        qtyBought,
+        quotedQty,
+        slippagePct: (((quotedQty - qtyBought) / quotedQty) * 100).toFixed(3),
+      });
 
       // 7. Create position legs
       const createdLegs = createTwoLegPosition(

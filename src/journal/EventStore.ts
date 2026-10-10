@@ -317,6 +317,12 @@ export class EventStore {
    * Archive old events to monthly files
    */
   archive(): { archivedCount: number; archivedTo: string[] } {
+    // Refresh from disk first. This writes with `merge: false` (it has to, or
+    // it would read the archived events straight back in), so anything another
+    // bot appended since this process loaded would otherwise be dropped - the
+    // same event loss this class was just fixed for.
+    this.events = this.mergeWithDisk();
+
     const cutoffTime =
       Date.now() - this.config.archiveAfterDays * 24 * 60 * 60 * 1000;
     const toArchive = this.events.filter((e) => e.timestamp < cutoffTime);

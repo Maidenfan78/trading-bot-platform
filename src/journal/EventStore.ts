@@ -29,6 +29,7 @@ export class EventStore {
   private eventFile: string;
   private archiveDir: string;
   private loaded = false;
+  private readOnly = false;
 
   constructor(config: EventStoreConfig) {
     this.config = { ...DEFAULT_CONFIG, ...config };
@@ -48,6 +49,20 @@ export class EventStore {
     }
   }
 
+  /**
+   * Write JSON via a temp file + rename, which is atomic on one filesystem.
+   *
+   * A plain writeFileSync truncates first, so a crash or a second writer
+   * part-way through leaves a half-written file. That is how this store lost
+   * history once already: the partial file failed to parse, load() started
+   * empty, and the next save() overwrote the remains.
+   */
+  private writeJsonAtomic(file: string, db: EventDatabase): void {
+    const tmp = `${file}.tmp.${process.pid}`;
+    fs.writeFileSync(tmp, JSON.stringify(db, null, 2));
+    fs.renameSync(tmp, file);
+  }
+
   private load(): void {
     if (this.loaded) return;
 
@@ -63,24 +78,92 @@ export class EventStore {
         }
       }
     } catch (error) {
-      console.error('Failed to load events file:', error);
+      // Never start empty *on top of* a file we could not parse - the next
+      // save() would overwrite it and the history would be gone for good.
+      // Move it aside so it stays salvageable, and say so loudly.
+      const quarantine = `${this.eventFile}.corrupt-${new Date()
+        .toISOString()
+        .replace(/[:.]/g, '-')}`;
+      try {
+        fs.renameSync(this.eventFile, quarantine);
+        console.error(
+          `Failed to parse events file. Moved it to ${quarantine} and started ` +
+            'empty; those events are recoverable from that file.',
+          error
+        );
+      } catch (renameError) {
+        // Could not even move it. Overwriting would destroy it, so drop
+        // journal writes for this run instead and keep the file intact.
+        this.readOnly = true;
+        console.error(
+          'Failed to parse events file AND failed to move it aside; refusing ' +
+            'to overwrite it. Journal writes are disabled for this run.',
+          error,
+          renameError
+        );
+      }
       this.events = [];
     }
 
     this.loaded = true;
   }
 
-  private save(): void {
+  private save(options: { merge?: boolean } = {}): void {
+    if (this.readOnly) return;
+
+    const merge = options.merge !== false;
     try {
+      const events = merge ? this.mergeWithDisk() : this.events;
       const db: EventDatabase = {
         version: 1,
-        events: this.events,
+        events,
         lastUpdated: Date.now(),
       };
-      fs.writeFileSync(this.eventFile, JSON.stringify(db, null, 2));
+      this.writeJsonAtomic(this.eventFile, db);
+      // Keep the in-memory view equal to what is now on disk.
+      this.events = events;
     } catch (error) {
       console.error('Failed to save events file:', error);
     }
+  }
+
+  /**
+   * Union this process's events with whatever is on disk, deduped by id.
+   *
+   * Several bots share one data dir. Each holds its own in-memory copy and
+   * writes the whole array, so a plain overwrite silently drops whatever
+   * another process appended since this one loaded - no corruption needed,
+   * just lost events. Capped to the in-memory limit so the file stays bounded.
+   *
+   * Callers that mean to *shrink* the file (archive, clear) pass
+   * `{ merge: false }`, or the events they just removed would be read straight
+   * back in.
+   */
+  private mergeWithDisk(): JournalEvent[] {
+    let onDisk: JournalEvent[] = [];
+    try {
+      if (fs.existsSync(this.eventFile)) {
+        const db: EventDatabase = JSON.parse(
+          fs.readFileSync(this.eventFile, 'utf-8')
+        );
+        onDisk = db.events || [];
+      }
+    } catch {
+      // Not fatal: this process still has its own events, and the atomic
+      // write replaces the file wholesale. load() quarantines at startup.
+      onDisk = [];
+    }
+
+    const byId = new Map<string, JournalEvent>();
+    for (const event of onDisk) byId.set(event.id, event);
+    for (const event of this.events) byId.set(event.id, event);
+
+    const merged = Array.from(byId.values()).sort(
+      (a, b) => a.timestamp - b.timestamp
+    );
+    return merged.length > this.config.maxEventsInMemory
+      ? merged.slice(-this.config.maxEventsInMemory)
+      : merged;
   }
 
   /**
@@ -283,13 +366,14 @@ export class EventStore {
         lastUpdated: Date.now(),
       };
 
-      fs.writeFileSync(archiveFile, JSON.stringify(archiveDb, null, 2));
+      this.writeJsonAtomic(archiveFile, archiveDb);
       archivedTo.push(archiveFile);
     }
 
-    // Remove archived events from main store
+    // Remove archived events from main store. No merge: these events were
+    // just written to the archive, and merging would pull them back in.
     this.events = this.events.filter((e) => e.timestamp >= cutoffTime);
-    this.save();
+    this.save({ merge: false });
 
     return { archivedCount: toArchive.length, archivedTo };
   }
@@ -314,6 +398,6 @@ export class EventStore {
   clear(): void {
     this.events = [];
     this.pendingWrites = [];
-    this.save();
+    this.save({ merge: false });
   }
 }

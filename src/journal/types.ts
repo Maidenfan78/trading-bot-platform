@@ -277,4 +277,9 @@ export interface EventStoreConfig {
   archiveAfterDays?: number;
   /** Flush to disk after this many events (default: 10) */
   flushThreshold?: number;
+  /**
+   * How long to wait for the cross-process write lock before giving up and
+   * leaving the events queued for the next flush (default: 5000ms).
+   */
+  lockTimeoutMs?: number;
 }

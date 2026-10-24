@@ -141,6 +141,9 @@ export interface LiveBrokerConfig {
   tradeLegUsdc: number;
   atrTpMultiplier: number;
   atrTrailMultiplier: number;
+  /** BTC-only sell floor; see `BalanceConfig.minBtcBalance` (BUG-032). */
   minBtcBalance: number;
+  /** Optional per-asset sell floor by symbol; see `BalanceConfig.minAssetBalance`. */
+  minAssetBalance?: Record<string, number>;
   minUsdcReserve: number;
 }

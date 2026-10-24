@@ -10,7 +10,24 @@ import type { BalanceInfo, Logger } from '../types';
  */
 
 export interface BalanceConfig {
-  minBtcBalance: number; // Minimum BTC to keep (never fully exit)
+  /**
+   * BTC-only sell floor, in BTC. Applies to cbBTC and WBTC and nothing else.
+   *
+   * It used to be subtracted before *every* sell regardless of the token held
+   * (BUG-032). 0.001 is a sensible reserve in BTC and meaningless in JUP, so one
+   * number cannot serve both: it made the guard far stricter for some assets than
+   * others and the rejection then talked about "BTC" while discussing SOL.
+   */
+  minBtcBalance: number;
+  /**
+   * Optional per-asset sell floor, keyed by asset symbol (e.g. `{ SOL: 0.05 }`).
+   * Takes precedence over `minBtcBalance`. An asset with no entry here, and that
+   * is not BTC, keeps nothing back - which is safe under the hold/trade model:
+   * a HOLD leg is never sold, so "never fully exit" is guaranteed by the model
+   * rather than by a balance floor, and the balance-vs-quantity comparison still
+   * refuses to sell more than the wallet holds.
+   */
+  minAssetBalance?: Record<string, number>;
   minUsdcReserve: number; // Minimum USDC reserve (dry powder)
 }
 
@@ -234,31 +251,56 @@ export async function canTrade(
 }
 
 /**
- * Check if wallet can close a position
+ * How much of `mint` must stay in the wallet after a sell.
+ *
+ * An explicit per-asset floor wins; otherwise only BTC gets `minBtcBalance`,
+ * because that number is denominated in BTC and means nothing in another token
+ * (BUG-032). Everything else keeps nothing back - see `minAssetBalance`.
+ */
+function resolveSellReserve(
+  mint: string,
+  config: BalanceConfig,
+  asset?: string
+): number {
+  const perAsset = asset ? config.minAssetBalance?.[asset] : undefined;
+  if (perAsset !== undefined) return perAsset;
+  return isBtcToken(mint) ? config.minBtcBalance : 0;
+}
+
+/**
+ * Check if wallet can close a position.
+ *
+ * `asset` is the leg's symbol. It is optional only so existing callers keep
+ * working; pass it, because it selects the per-asset floor and is what the
+ * rejection message names.
  */
 export async function canClosePosition(
   connection: Connection,
   walletPublicKey: PublicKey,
-  btcMint: string,
-  requiredBtcAmount: number,
+  mint: string,
+  requiredAmount: number,
   config: BalanceConfig,
-  logger?: Logger
+  logger?: Logger,
+  asset?: string
 ): Promise<{ canClose: boolean; reason?: string }> {
   try {
-    const btcBalance = await getTokenBalance(
+    const balance = await getTokenBalance(
       connection,
       walletPublicKey,
-      new PublicKey(btcMint),
+      new PublicKey(mint),
       logger
     );
 
-    // Check if we have enough BTC to close (must keep minimum)
-    const availableToSell = btcBalance - config.minBtcBalance;
+    // Keep back this asset's own floor, not a BTC-shaped one.
+    const reserve = resolveSellReserve(mint, config, asset);
+    const availableToSell = balance - reserve;
+    const label = asset || mint;
 
-    if (availableToSell < requiredBtcAmount) {
+    if (availableToSell < requiredAmount) {
+      const keeping = reserve > 0 ? ` (keeping ${reserve} ${label} minimum)` : '';
       return {
         canClose: false,
-        reason: `Insufficient BTC. Need ${requiredBtcAmount.toFixed(8)}, have ${availableToSell.toFixed(8)} available (keeping ${config.minBtcBalance} minimum)`,
+        reason: `Insufficient ${label}. Need ${requiredAmount.toFixed(8)}, have ${availableToSell.toFixed(8)} available${keeping}`,
       };
     }
 

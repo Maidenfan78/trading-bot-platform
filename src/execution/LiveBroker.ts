@@ -64,6 +64,7 @@ export class LiveBroker implements Broker {
   private getBalanceConfig(): BalanceConfig {
     return {
       minBtcBalance: this.config.minBtcBalance,
+      minAssetBalance: this.config.minAssetBalance,
       minUsdcReserve: this.config.minUsdcReserve,
     };
   }
@@ -376,7 +377,8 @@ export class LiveBroker implements Broker {
         mint,
         leg.quantity,
         this.getBalanceConfig(),
-        this.logger
+        this.logger,
+        leg.asset
       );
 
       if (!closeCheck.canClose) {

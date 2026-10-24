@@ -195,7 +195,11 @@ describe('LiveBroker closeLeg mint resolution (BUG-027)', () => {
     mockGetQuoteTokenToUsdc.mockResolvedValue({ outAmount: '1000000', priceImpactPct: 0 });
 
     const broker = makeBroker();
-    await broker.closeLeg({ ...baseLeg, mint: JUP, decimals: 6 }, candle, 'test');
+    await broker.closeLeg(
+      { ...baseLeg, asset: 'JUP', mint: JUP, decimals: 6 },
+      candle,
+      'test'
+    );
 
     expect(mockGetQuoteTokenToUsdc).toHaveBeenCalledWith(1, JUP, 6);
     expect(mockCanClosePosition).toHaveBeenCalledWith(
@@ -204,7 +208,10 @@ describe('LiveBroker closeLeg mint resolution (BUG-027)', () => {
       JUP,
       1,
       expect.anything(),
-      undefined
+      undefined,
+      // The leg's symbol has to reach the guard, or it falls back to the
+      // BTC-shaped reserve and names the mint in the rejection (BUG-032).
+      'JUP'
     );
   });
 

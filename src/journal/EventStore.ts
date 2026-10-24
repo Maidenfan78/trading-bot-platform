@@ -214,16 +214,32 @@ export class EventStore {
   }
 
   /**
-   * Union this process's events with whatever is on disk, deduped by id.
+   * Union what is on disk with this process's **unflushed** events, deduped by
+   * id. Disk is authoritative for everything else.
    *
    * Several bots share one data dir. Each holds its own in-memory copy and
    * writes the whole array, so a plain overwrite silently drops whatever
    * another process appended since this one loaded - no corruption needed,
    * just lost events. Capped to the in-memory limit so the file stays bounded.
    *
-   * Callers that mean to *shrink* the file (archive, clear) pass
-   * `{ merge: false }`, or the events they just removed would be read straight
-   * back in.
+   * It merges `pendingWrites`, not `this.events`, and the difference is
+   * load-bearing. `this.events` is a query cache holding everything this
+   * process has seen since it loaded, including events that have since been
+   * **archived out of the file by another process**. Merging all of it put them
+   * straight back: on 2026-10-24 the live file held 1819 events spanning 43
+   * days with 210 of them also sitting in `events-2026-09.json`, because the
+   * bots had been running since before the Oct 18 archive run and re-added what
+   * it removed on their next flush. The archive could never shrink the file
+   * while a long-lived bot was up, so it grew unbounded between restarts and
+   * analyses that read both files double-counted.
+   *
+   * `pendingWrites` is exactly this process's contribution that disk might not
+   * have yet; anything else it holds either came from disk or was already
+   * flushed, and may have been deliberately removed since.
+   *
+   * Callers that mean to *shrink* the file (archive, clear) still pass
+   * `{ merge: false }`, so they write their own trimmed array rather than
+   * re-reading the file they are shrinking.
    */
   private mergeWithDisk(): JournalEvent[] {
     let onDisk: JournalEvent[] = [];
@@ -235,14 +251,14 @@ export class EventStore {
         onDisk = db.events || [];
       }
     } catch {
-      // Not fatal: this process still has its own events, and the atomic
+      // Not fatal: this process still has its unflushed events, and the atomic
       // write replaces the file wholesale. load() quarantines at startup.
       onDisk = [];
     }
 
     const byId = new Map<string, JournalEvent>();
     for (const event of onDisk) byId.set(event.id, event);
-    for (const event of this.events) byId.set(event.id, event);
+    for (const event of this.pendingWrites) byId.set(event.id, event);
 
     const merged = Array.from(byId.values()).sort(
       (a, b) => a.timestamp - b.timestamp
@@ -407,10 +423,11 @@ export class EventStore {
    * Archive old events to monthly files
    */
   archive(): { archivedCount: number; archivedTo: string[] } {
-    // Refresh from disk first. This writes with `merge: false` (it has to, or
-    // it would read the archived events straight back in), so anything another
-    // bot appended since this process loaded would otherwise be dropped - the
-    // same event loss this class was just fixed for.
+    // Take disk as the starting point. This writes with `merge: false` (it has
+    // to, or it would read the archived events straight back in), so without
+    // re-reading first, anything another bot appended since this process loaded
+    // would be dropped - the same event loss this class was fixed for. With
+    // nothing pending in an archive run, this is simply "load the current file".
     this.events = this.mergeWithDisk();
 
     const cutoffTime =

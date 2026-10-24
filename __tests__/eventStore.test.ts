@@ -193,6 +193,35 @@ describe('EventStore durability', () => {
     expect(ids).not.toContain('ancient');
   });
 
+  it('a long-lived writer does not resurrect what the archiver removed', () => {
+    // The production shape on 2026-10-24: bots up since before an archive run
+    // still held the archived events in memory and re-added them on their next
+    // flush, so the live file held 43 days of history with 210 events also
+    // sitting in events-2026-09.json. The archive could never shrink the file
+    // while a bot was up.
+    const ancient = Date.now() - 60 * 24 * 60 * 60 * 1000;
+
+    const seed = new EventStore({ dataDir, flushThreshold: 1 });
+    seed.append(makeEvent('ancient', ancient));
+    seed.append(makeEvent('recent', Date.now()));
+
+    // A bot that loaded BEFORE the archive run: 'ancient' is in its cache.
+    const longLivedBot = new EventStore({ dataDir, flushThreshold: 1 });
+
+    const archiver = new EventStore({ dataDir, flushThreshold: 1, archiveAfterDays: 30 });
+    expect(archiver.archive().archivedCount).toBe(1);
+    expect(readEvents(dataDir).map((e) => e.id)).toEqual(['recent']);
+
+    // The bot keeps running and flushes a new event.
+    longLivedBot.append(makeEvent('after-archive', Date.now()));
+
+    const ids = readEvents(dataDir).map((e) => e.id);
+    expect(ids).toContain('recent');
+    expect(ids).toContain('after-archive');
+    // The whole point: it must NOT have come back.
+    expect(ids).not.toContain('ancient');
+  });
+
   it('archive() keeps events another process appended since it loaded', () => {
     const archiver = new EventStore({
       dataDir,

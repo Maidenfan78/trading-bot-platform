@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { EventStore } from '../src/journal/EventStore';
+import { EventStore, withLock } from '../src/journal/EventStore';
 import type { JournalEvent } from '../src/journal/types';
 
 function makeEvent(id: string, timestamp: number): JournalEvent {
@@ -62,6 +62,68 @@ describe('EventStore durability', () => {
     const ids = readEvents(dataDir).map((e) => e.id);
     expect(ids).toContain('from-first');
     expect(ids).toContain('from-second');
+  });
+
+  it('excludes a second holder for the whole critical section', () => {
+    // The merge above still loses events if two savers interleave: both read
+    // the same disk state, then the second rename wins. What prevents that is
+    // the lock covering read-and-write as one section, so assert exactly that -
+    // nobody else gets in while fn is running.
+    const lockFile = path.join(dataDir, 'events.lock');
+    let inner: boolean | undefined;
+
+    const outer = withLock(lockFile, 150, () => {
+      expect(fs.existsSync(lockFile)).toBe(true);
+      inner = withLock(lockFile, 150, () => undefined);
+    });
+
+    expect(outer).toBe(true);
+    expect(inner).toBe(false);
+    // Released again, so the next save is not blocked.
+    expect(fs.existsSync(lockFile)).toBe(false);
+  });
+
+  it('releases the lock even when the critical section throws', () => {
+    const lockFile = path.join(dataDir, 'events.lock');
+    expect(() =>
+      withLock(lockFile, 150, () => {
+        throw new Error('write blew up');
+      })
+    ).toThrow('write blew up');
+    expect(fs.existsSync(lockFile)).toBe(false);
+  });
+
+  it('steals a stale lock so a bot killed mid-save cannot block the journal', () => {
+    const lockFile = path.join(dataDir, 'events.lock');
+    fs.writeFileSync(lockFile, JSON.stringify({ pid: 999999, at: 0 }));
+    // Backdate well past the 30s stale threshold.
+    const old = new Date(Date.now() - 10 * 60 * 1000);
+    fs.utimesSync(lockFile, old, old);
+
+    const store = new EventStore({ dataDir, flushThreshold: 1 });
+    store.append(makeEvent('after-steal', 1000));
+
+    expect(readEvents(dataDir).map((e) => e.id)).toEqual(['after-steal']);
+    expect(fs.existsSync(lockFile)).toBe(false);
+  });
+
+  it('keeps events queued when the lock cannot be taken', () => {
+    const lockFile = path.join(dataDir, 'events.lock');
+    // Short timeout so the test does not sit through the 5s production wait.
+    const store = new EventStore({ dataDir, flushThreshold: 1, lockTimeoutMs: 150 });
+
+    // A fresh lock held by someone else: not stale, so not stealable.
+    fs.writeFileSync(lockFile, JSON.stringify({ pid: 999999, at: Date.now() }));
+    store.append(makeEvent('blocked', 1000));
+
+    // Nothing was written, and the failure was reported rather than swallowed.
+    expect(fs.existsSync(path.join(dataDir, 'events.json'))).toBe(false);
+    expect(errorSpy).toHaveBeenCalled();
+
+    // Once the holder goes away the queued event still lands.
+    fs.unlinkSync(lockFile);
+    store.flush();
+    expect(readEvents(dataDir).map((e) => e.id)).toEqual(['blocked']);
   });
 
   it('dedupes by id rather than duplicating on repeated flushes', () => {

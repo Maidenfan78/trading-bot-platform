@@ -20,13 +20,80 @@ const DEFAULT_CONFIG: Required<Omit<EventStoreConfig, 'dataDir'>> = {
   maxEventsInMemory: 10000,
   archiveAfterDays: 30,
   flushThreshold: 10,
+  lockTimeoutMs: 5000,
 };
+
+const LOCK_STALE_MS = 30000;
+const LOCK_POLL_MS = 40;
+
+/** Synchronous sleep, so the lock poll doesn't yield the file to a racing process. */
+function sleepSync(ms: number): void {
+  const until = Date.now() + ms;
+  while (Date.now() < until) {
+    // busy-wait; the waits here are tens of milliseconds
+  }
+}
+
+/**
+ * Run `fn` while holding an exclusive lock on `lockFile`. Synchronous, so `fn`
+ * must not await. Returns false if the lock could not be taken in time.
+ *
+ * Several bots share one events file and each save is a read-modify-write
+ * (merge with disk, then rename over it). Without a lock two bots that finish
+ * in the same second both read the same disk state and the second rename wins,
+ * so the first bot's events vanish - no corruption, just silent loss. Observed
+ * 2026-10-24: tdfi's 08:24Z cycle left no events while tcf2's identical-second
+ * cycle left five.
+ *
+ * Steals a lock older than LOCK_STALE_MS, so a bot killed mid-save cannot
+ * block the journal forever.
+ */
+export function withLock(lockFile: string, timeoutMs: number, fn: () => void): boolean {
+  const deadline = Date.now() + timeoutMs;
+
+  for (;;) {
+    try {
+      const fd = fs.openSync(lockFile, 'wx'); // O_CREAT | O_EXCL - atomic
+      try {
+        fs.writeSync(fd, JSON.stringify({ pid: process.pid, at: Date.now() }));
+      } finally {
+        fs.closeSync(fd);
+      }
+      break; // acquired
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+      try {
+        const st = fs.statSync(lockFile);
+        if (Date.now() - st.mtimeMs > LOCK_STALE_MS) {
+          fs.unlinkSync(lockFile);
+          continue; // stale holder - retry immediately
+        }
+      } catch {
+        continue; // lock vanished between calls - retry
+      }
+      if (Date.now() >= deadline) return false;
+      sleepSync(LOCK_POLL_MS);
+    }
+  }
+
+  try {
+    fn();
+    return true;
+  } finally {
+    try {
+      fs.unlinkSync(lockFile);
+    } catch {
+      // already gone - fine
+    }
+  }
+}
 
 export class EventStore {
   private config: Required<EventStoreConfig>;
   private events: JournalEvent[] = [];
   private pendingWrites: JournalEvent[] = [];
   private eventFile: string;
+  private lockFile: string;
   private archiveDir: string;
   private loaded = false;
   private readOnly = false;
@@ -34,6 +101,7 @@ export class EventStore {
   constructor(config: EventStoreConfig) {
     this.config = { ...DEFAULT_CONFIG, ...config };
     this.eventFile = path.join(config.dataDir, 'events.json');
+    this.lockFile = path.join(config.dataDir, 'events.lock');
     this.archiveDir = path.join(config.dataDir, 'events-archive');
 
     this.ensureDirectories();
@@ -108,22 +176,40 @@ export class EventStore {
     this.loaded = true;
   }
 
-  private save(options: { merge?: boolean } = {}): void {
-    if (this.readOnly) return;
+  /**
+   * Persist to disk. Returns false if nothing was written, so flush() can keep
+   * the events queued for the next attempt instead of dropping them.
+   *
+   * The merge and the write must happen under one lock: they are a
+   * read-modify-write against a file other bot processes also write, and
+   * splitting them is what loses events (see withLock).
+   */
+  private save(options: { merge?: boolean } = {}): boolean {
+    if (this.readOnly) return false;
 
     const merge = options.merge !== false;
     try {
-      const events = merge ? this.mergeWithDisk() : this.events;
-      const db: EventDatabase = {
-        version: 1,
-        events,
-        lastUpdated: Date.now(),
-      };
-      this.writeJsonAtomic(this.eventFile, db);
-      // Keep the in-memory view equal to what is now on disk.
-      this.events = events;
+      const wrote = withLock(this.lockFile, this.config.lockTimeoutMs, () => {
+        const events = merge ? this.mergeWithDisk() : this.events;
+        const db: EventDatabase = {
+          version: 1,
+          events,
+          lastUpdated: Date.now(),
+        };
+        this.writeJsonAtomic(this.eventFile, db);
+        // Keep the in-memory view equal to what is now on disk.
+        this.events = events;
+      });
+      if (!wrote) {
+        console.error(
+          `Could not take the journal lock within ${this.config.lockTimeoutMs}ms ` +
+            `(${this.lockFile}); events stay queued for the next flush.`
+        );
+      }
+      return wrote;
     } catch (error) {
       console.error('Failed to save events file:', error);
+      return false;
     }
   }
 
@@ -206,8 +292,12 @@ export class EventStore {
    */
   flush(): void {
     if (this.pendingWrites.length > 0) {
-      this.save();
-      this.pendingWrites = [];
+      // Only drop the queue once the write actually landed. The events also
+      // live in this.events, so a later merge would pick them up anyway, but
+      // keeping them queued makes the next flush retry immediately.
+      if (this.save()) {
+        this.pendingWrites = [];
+      }
     }
   }
 

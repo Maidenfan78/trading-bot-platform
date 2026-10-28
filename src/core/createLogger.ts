@@ -14,6 +14,25 @@ export interface LoggerConfig {
   logFile?: string;
   errorLogFile?: string;
   console?: boolean;
+  /**
+   * Write the log files from this process (default true).
+   *
+   * Set it **false** when something else already persists stdout/stderr to
+   * those paths - a systemd unit using `StandardOutput=append:` is the case
+   * that bit btc-trader (BUG-037). Two writers for one path is not a
+   * redundancy: under systemd the unit's descriptors are opened by root while
+   * the service runs as an unprivileged user, so this transport can never open
+   * the file.
+   *
+   * Observed consequence: the whole logger goes quiet, Console transport
+   * included, after a time proportional to write volume - ~17h for the 4H bots
+   * writing every 15 minutes, 4+ days for the 1D bot writing once a day - while
+   * the process otherwise runs normally. Winston does not throw on the failed
+   * open, so the likeliest mechanism is entries queueing against a stream that
+   * never opens and stalling the logger's shared pipeline. The cure is not
+   * having the impossible transport, which is what this flag is for.
+   */
+  file?: boolean;
 }
 
 /**
@@ -33,6 +52,7 @@ export function createLogger(config: LoggerConfig): Logger {
     logFile,
     errorLogFile,
     console: enableConsole = true,
+    file: enableFiles = true,
   } = config;
 
   // Ensure logs directory exists
@@ -61,24 +81,40 @@ export function createLogger(config: LoggerConfig): Logger {
     );
   }
 
-  // File output - all logs
-  transports.push(
-    new winston.transports.File({
-      filename: mainLogFile,
-      maxsize: 10 * 1024 * 1024, // 10MB
-      maxFiles: 5,
-    })
-  );
+  // File output - all logs, and errors only. Skipped entirely when the caller
+  // says something else owns these paths (see LoggerConfig.file).
+  if (enableFiles) {
+    transports.push(
+      new winston.transports.File({
+        filename: mainLogFile,
+        maxsize: 10 * 1024 * 1024, // 10MB
+        maxFiles: 5,
+      })
+    );
 
-  // File output - errors only
-  transports.push(
-    new winston.transports.File({
-      filename: errLogFile,
-      level: 'error',
-      maxsize: 10 * 1024 * 1024, // 10MB
-      maxFiles: 5,
-    })
-  );
+    transports.push(
+      new winston.transports.File({
+        filename: errLogFile,
+        level: 'error',
+        maxsize: 10 * 1024 * 1024, // 10MB
+        maxFiles: 5,
+      })
+    );
+  }
+
+  // Make a failing transport visible. This is NOT what fixes BUG-037 - winston
+  // already swallows an unopenable file without throwing (verified by removing
+  // this loop and watching the test still pass). It is here because a transport
+  // that quietly cannot write is exactly what went unnoticed for 12 days: with
+  // no handler there is nothing anywhere saying the file is unwritable.
+  for (const transport of transports) {
+    transport.on('error', (error: Error) => {
+      process.stderr.write(
+        `logger transport failed (${transport.constructor.name}), continuing ` +
+          `without it: ${error.message}\n`
+      );
+    });
+  }
 
   const winstonLogger = winston.createLogger({
     level: logLevel,

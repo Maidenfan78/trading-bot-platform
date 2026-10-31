@@ -1,5 +1,8 @@
 import { Connection, Keypair } from '@solana/web3.js';
 import { LiveBroker } from '../src/execution/LiveBroker';
+import { isUnresolvedExecutionError } from '../src/execution/unresolvedExecution';
+import type { UnresolvedExecutionError } from '../src/execution/unresolvedExecution';
+import bs58 from 'bs58';
 import type { PositionLeg } from '../src/types';
 
 const mockCanTrade = jest.fn();
@@ -383,6 +386,67 @@ describe('LiveBroker balance checks (BUG-028)', () => {
 
     expect(legs).toBeNull();
     expect(mockGetQuoteUsdcToToken).not.toHaveBeenCalled();
+    expect(mockSendAndConfirm).not.toHaveBeenCalled();
+  });
+});
+
+describe('LiveBroker unresolved buy contract (BUG-047)', () => {
+  const weth = { symbol: 'wETH', mint: WETH, decimals: 8 };
+  const signedTx = () => ({ signatures: [Uint8Array.from([7, 8, 9])], message: { recentBlockhash: 'blockhash-1' } });
+
+  beforeEach(() => {
+    mockGetQuoteUsdcToToken.mockResolvedValue({ quote: { outAmount: '8000000', priceImpactPct: 0 }, mint: WETH, decimals: 8 });
+    mockBuildSwapTransaction.mockResolvedValue(signedTx());
+  });
+
+  async function openError(): Promise<unknown> {
+    try {
+      await makeBroker().openPosition(longSignal, candle, weth);
+    } catch (error) {
+      return error;
+    }
+    throw new Error('expected openPosition to throw');
+  }
+
+  it('throws with the signature, blockhash and committed spend when the send never resolves', async () => {
+    mockSendAndConfirm.mockResolvedValue({ success: false, unresolved: true, signature: 'pending-sig', error: 'timeout' });
+    const error = await openError();
+    expect(isUnresolvedExecutionError(error)).toBe(true);
+    expect((error as UnresolvedExecutionError).evidence).toEqual({
+      signature: 'pending-sig', recentBlockhash: 'blockhash-1', mint: WETH, usdcCommitted: 200,
+    });
+  });
+
+  it('derives the signature locally when no send reply arrived', async () => {
+    mockSendAndConfirm.mockResolvedValue({ success: false, signature: '', error: 'socket hang up' });
+    const error = await openError() as UnresolvedExecutionError;
+    expect(error.evidence.signature).toBe(bs58.encode(Uint8Array.from([7, 8, 9])));
+  });
+
+  it('treats a throw during submission as unresolved, not as no spend', async () => {
+    mockSendAndConfirm.mockRejectedValue(new Error('connection dropped'));
+    const error = await openError() as UnresolvedExecutionError;
+    expect(isUnresolvedExecutionError(error)).toBe(true);
+    expect(error.evidence).toMatchObject({ recentBlockhash: 'blockhash-1', mint: WETH });
+  });
+
+  it('marks a confirmed swap with no usable fill quantity as landed', async () => {
+    mockGetQuoteUsdcToToken.mockResolvedValue({ quote: { outAmount: '0', priceImpactPct: 0 }, mint: WETH, decimals: 8 });
+    const error = await openError() as UnresolvedExecutionError;
+    expect(error.evidence).toMatchObject({ signature: 'sig', landed: true });
+  });
+
+  it('returns null for a definitive on-chain failure: nothing was spent', async () => {
+    mockSendAndConfirm.mockResolvedValue({ success: false, signature: 'failed-sig', error: 'Transaction failed' });
+    await expect(makeBroker().openPosition(longSignal, candle, weth)).resolves.toBeNull();
+  });
+
+  it.each(['quote', 'validation', 'build', 'exception'])('returns null before submission: %s', async stage => {
+    if (stage === 'quote') mockGetQuoteUsdcToToken.mockResolvedValue(null);
+    if (stage === 'validation') mockValidateQuote.mockResolvedValue(false);
+    if (stage === 'build') mockBuildSwapTransaction.mockResolvedValue(null);
+    if (stage === 'exception') mockCanTradeAsset.mockRejectedValue(new Error('RPC down'));
+    await expect(makeBroker().openPosition(longSignal, candle, weth)).resolves.toBeNull();
     expect(mockSendAndConfirm).not.toHaveBeenCalled();
   });
 });

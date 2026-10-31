@@ -7,6 +7,11 @@
 export { PaperBroker } from './PaperBroker';
 export { LiveBroker } from './LiveBroker';
 export {
+  UnresolvedExecutionError,
+  isUnresolvedExecutionError,
+  type UnresolvedExecutionEvidence,
+} from './unresolvedExecution';
+export {
   CircuitBreaker,
   type CircuitBreakerConfig,
   type CircuitBreakerState,

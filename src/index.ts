@@ -171,11 +171,14 @@ export {
   PaperBroker,
   LiveBroker,
   CircuitBreaker,
+  UnresolvedExecutionError,
+  isUnresolvedExecutionError,
 } from './execution';
 
 export type {
   CircuitBreakerConfig,
   CircuitBreakerState,
+  UnresolvedExecutionEvidence,
 } from './execution';
 
 // The asset a trade executes against - mint + real decimals. Passing this to

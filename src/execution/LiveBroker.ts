@@ -1,5 +1,6 @@
-import type { Keypair } from '@solana/web3.js';
+import type { Keypair, VersionedTransaction } from '@solana/web3.js';
 import { Connection, PublicKey } from '@solana/web3.js';
+import bs58 from 'bs58';
 import type { Signal, PositionLeg, Candle, CloseLegResult, CloseLegOptions, Logger } from '../types';
 import type { Broker, LiveBrokerConfig, TradeAsset } from '../core/Broker';
 import { JupiterClient } from '../solana/jupiter';
@@ -9,7 +10,15 @@ import { canTrade, canTradeAsset, canClosePosition, getTokenBalance } from '../s
 import { reconcileFilledQuantity } from './fillReconciliation';
 import { confirmedSaleProceeds } from './saleProceeds';
 import { executeCloseIntent } from './closeIntent';
+import { UnresolvedExecutionError, isUnresolvedExecutionError } from './unresolvedExecution';
+import type { UnresolvedExecutionEvidence } from './unresolvedExecution';
 import { createTwoLegPosition, updatePositions, closeRunnersOnTrimSignal } from '../strategy/position';
+
+/** Solana's transaction id is its first signature, so it is known once signed even if no send reply arrived. */
+function signedSignature(transaction: VersionedTransaction): string | undefined {
+  const first = (transaction as { signatures?: Uint8Array[] }).signatures?.[0];
+  return first && first.some((byte) => byte !== 0) ? bs58.encode(first) : undefined;
+}
 
 /**
  * Live Trading Broker
@@ -72,7 +81,12 @@ export class LiveBroker implements Broker {
   }
 
   /**
-   * Open a two-leg position with real BTC purchase
+   * Open a two-leg position with real BTC purchase.
+   *
+   * Returns null only when nothing can have executed. Once a transaction may have
+   * been submitted, an outcome that cannot be established throws
+   * `UnresolvedExecutionError` with its evidence instead (BUG-047): the caller must
+   * keep its spend claim rather than refund it.
    */
   async openPosition(
     signal: Signal,
@@ -84,6 +98,8 @@ export class LiveBroker implements Broker {
       return null;
     }
 
+    // Set once a transaction may reach the chain; from then on failure is not proof of no spend.
+    let pending: UnresolvedExecutionEvidence | undefined;
     try {
       this.logger?.info('🔄 Opening live position...', {
         signal: signal.type,
@@ -208,6 +224,11 @@ export class LiveBroker implements Broker {
 
       this.logger?.info('📤 Sending transaction to Solana...');
 
+      pending = {
+        recentBlockhash: (transaction as { message?: { recentBlockhash?: string } }).message?.recentBlockhash,
+        mint: filledMint,
+        usdcCommitted: totalUsdc,
+      };
       const result = await sendAndConfirmVersionedTransaction(
         this.connection,
         transaction,
@@ -218,35 +239,34 @@ export class LiveBroker implements Broker {
         },
         this.logger
       );
+      pending.signature = result.signature || signedSignature(transaction);
 
       if (!result.success) {
-        if (result.unresolved) {
-          // Sent, fate unknown. This is NOT "it did not happen": the wallet may
-          // hold coins this process never recorded, with no leg, no TP, and no
-          // ledger entry (BUG-030). Returning null is still the only honest
-          // option - we cannot invent a quantity - but it must be impossible to
-          // miss in the logs, and the signature must survive so it can be
-          // looked up.
+        // A returned signature without `unresolved` means the chain answered: the
+        // transaction landed and failed, so nothing moved. Anything else - fate
+        // unknown, or no send reply at all - may still land (BUG-030/047).
+        if (result.unresolved || !result.signature) {
           this.logger?.error(
             'RECONCILE REQUIRED - swap was sent but never resolved. The wallet may hold ' +
               'coins with no position recorded against them: no take-profit will fire and ' +
               'the accumulation ledger has no cost basis for them. Check the signature ' +
               'before letting this asset trade again.',
             {
-              signature: result.signature,
-              explorer: `https://solscan.io/tx/${result.signature}`,
+              signature: pending.signature,
+              explorer: pending.signature ? `https://solscan.io/tx/${pending.signature}` : undefined,
               mint: filledMint,
               usdcCommitted: totalUsdc,
             }
           );
-        } else {
-          this.logger?.error('Swap transaction failed:', {
-            error: result.error,
-            signature: result.signature || '(never sent)',
-          });
+          throw new UnresolvedExecutionError(result.error || 'Buy transaction outcome unknown', pending);
         }
+        this.logger?.error('Swap transaction failed:', {
+          error: result.error,
+          signature: result.signature,
+        });
         return null;
       }
+      pending.landed = true;
 
       this.logger?.info('✅ Swap executed successfully!', {
         signature: result.signature,
@@ -295,7 +315,7 @@ export class LiveBroker implements Broker {
             'determined, so no position can be recorded against coins the wallet now holds.',
           { signature: result.signature, mint: filledMint, quotedQty, measuredDelta }
         );
-        return null;
+        throw new UnresolvedExecutionError('Buy landed but its fill quantity is unknown', pending);
       }
 
       const avgPrice = totalUsdc / qtyBought;
@@ -333,7 +353,11 @@ export class LiveBroker implements Broker {
 
       return legs;
     } catch (error: any) {
+      if (isUnresolvedExecutionError(error)) throw error;
       this.logger?.error('Failed to open position:', error.message);
+      if (pending) {
+        throw new UnresolvedExecutionError(error.message || 'Buy execution failed after submission', pending);
+      }
       return null;
     }
   }

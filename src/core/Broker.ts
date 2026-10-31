@@ -1,4 +1,4 @@
-import type { Signal, PositionLeg, Candle, SwapResult } from '../types';
+import type { Signal, PositionLeg, Candle, CloseLegResult, CloseLegOptions } from '../types';
 
 /**
  * The asset a trade executes against.
@@ -40,9 +40,9 @@ export interface Broker {
    * @param leg - Position leg to close
    * @param candle - Current candle for price reference
    * @param reason - Reason for closing
-   * @returns Swap result or void (paper mode doesn't return swap result)
+   * @returns Explicit confirmed execution, failure, or unresolved outcome; never void.
    */
-  closeLeg(leg: PositionLeg, candle: Candle, reason: string): Promise<SwapResult | void>;
+  closeLeg(leg: PositionLeg, candle: Candle, reason: string, options?: CloseLegOptions): Promise<CloseLegResult>;
 
   /**
    * Update positions and close any that hit targets/stops

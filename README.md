@@ -2,6 +2,24 @@
 
 A multi-indicator, multi-asset trading bot framework for Solana. Trade on Jupiter DEX with customizable strategies.
 
+## Broker execution contract (2026-10-31)
+
+`closeLeg` requires the original OPEN leg and returns an explicit `CloseLegResult`. Consumers
+must confirm `success: true` and validate the fill before changing position status or recording
+profit. Failures leave ownership unchanged; unresolved results require reconciliation and must
+not be blindly retried. Legacy close helpers retain a `closePending` marker for uncertain fills.
+
+`CloseLegOptions.minOutputUsdc` lets the consumer require minimum gross USDC proceeds. Live
+execution enforces that threshold in the route and reads actual transaction-scoped USDC receipts;
+it does not establish profit after native transaction fees/rent. Successful live entries retain
+`entrySignature` on both legs for consumer wallet reconciliation. Paper execution returns actual
+simulated cash movements and refuses duplicate/invalid closes.
+
+This is a coordinated API change: rebuild this library before building consumers such as
+`btc-trader`, and update callers to handle explicit results. Persistent paper accounts, account
+namespaces, HOLD/expiry policy and recovery orchestration belong to the consumer. These changes
+have not been deployed to a trading service.
+
 ## Features
 
 - **Multiple Indicators**: MFI, ATR, TCF2, KPSS, TDFI, DSS-MOM

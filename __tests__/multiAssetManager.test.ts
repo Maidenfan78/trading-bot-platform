@@ -75,4 +75,18 @@ describe('MultiAssetManager position counts', () => {
 
     expect(getTotalOpenPositions(state)).toBe(1);
   });
+
+  it('blocks new entries while a sale is uncertain even if position capacity remains', () => {
+    const state = initializeMultiAssetState(assets);
+    updateAssetPositions(state, 'BTC', [{
+      id: 'pending', type: 'TRADE', status: 'OPEN', entryPrice: 100, quantity: 1, entryTime: 1,
+      closePending: { signature: 'unknown', reason: 'timeout', since: 2 },
+    }]);
+    const reloaded = JSON.parse(JSON.stringify(state));
+    const config = { assets, maxPositionsPerAsset: 2, maxTotalPositions: 3, minTimeBetweenTradesMs: 0 };
+    expect(canAssetTrade(reloaded, 'BTC', config, 3)).toEqual({
+      canTrade: false, reason: 'BTC requires sale reconciliation',
+    });
+    expect(canAssetTrade(reloaded, 'ETH', config, 3).canTrade).toBe(true);
+  });
 });

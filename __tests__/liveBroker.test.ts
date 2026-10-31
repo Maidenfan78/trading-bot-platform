@@ -1,4 +1,4 @@
-import { Keypair } from '@solana/web3.js';
+import { Connection, Keypair } from '@solana/web3.js';
 import { LiveBroker } from '../src/execution/LiveBroker';
 import type { PositionLeg } from '../src/types';
 
@@ -12,6 +12,9 @@ const mockGetQuoteTokenToUsdc = jest.fn();
 const mockValidateQuote = jest.fn();
 const mockBuildSwapTransaction = jest.fn();
 const mockSendAndConfirm = jest.fn();
+const mockGetTransaction = jest.fn();
+const mockWallet = Keypair.generate();
+jest.spyOn(Connection.prototype, 'getTransaction').mockImplementation((...args: any[]) => mockGetTransaction(...args));
 
 jest.mock('../src/solana/balances', () => ({
   canTrade: (...args: any[]) => mockCanTrade(...args),
@@ -33,7 +36,7 @@ jest.mock('../src/solana/jupiter', () => {
 });
 
 jest.mock('../src/solana/wallet', () => ({
-  loadWallet: jest.fn(() => Keypair.generate()),
+  loadWallet: jest.fn(() => mockWallet),
   sendAndConfirmVersionedTransaction: (...args: any[]) => mockSendAndConfirm(...args),
 }));
 
@@ -77,6 +80,16 @@ beforeEach(() => {
   mockValidateQuote.mockResolvedValue(true);
   mockBuildSwapTransaction.mockResolvedValue({ mock: true });
   mockSendAndConfirm.mockResolvedValue({ success: true, signature: 'sig' });
+  mockGetTransaction.mockResolvedValue({
+    blockTime: 1700000000,
+    meta: {
+      err: null,
+      preTokenBalances: [{ accountIndex: 1, mint: 'usdc', owner: mockWallet.publicKey.toBase58(),
+        uiTokenAmount: { amount: '1000000000', decimals: 6 } }],
+      postTokenBalances: [{ accountIndex: 1, mint: 'usdc', owner: mockWallet.publicKey.toBase58(),
+        uiTokenAmount: { amount: '1001250000', decimals: 6 } }],
+    },
+  });
 });
 
 describe('LiveBroker asset routing (BUG-025)', () => {
@@ -113,6 +126,7 @@ describe('LiveBroker asset routing (BUG-025)', () => {
     for (const leg of legs!) {
       expect(leg.mint).toBe(JUP);
       expect(leg.decimals).toBe(6);
+      expect(leg.entrySignature).toBe('sig');
     }
   });
 
@@ -229,10 +243,103 @@ describe('LiveBroker closeLeg mint resolution (BUG-027)', () => {
     const result = await broker.closeLeg(baseLeg, candle, 'test');
 
     // The old code resolved cbBtcMint here and sold BTC for real.
-    expect(result).toBeUndefined();
+    expect(result).toEqual({ success: false, error: 'No mint recorded on leg' });
     expect(mockCanClosePosition).not.toHaveBeenCalled();
     expect(mockGetQuoteTokenToUsdc).not.toHaveBeenCalled();
     expect(mockSendAndConfirm).not.toHaveBeenCalled();
+  });
+});
+
+describe('LiveBroker explicit close execution contract (BUG-038)', () => {
+  const leg: PositionLeg = {
+    id: 'sale', type: 'TRADE', status: 'OPEN', mint: JUP, decimals: 6,
+    entryPrice: 1, quantity: 1, entryTime: 1,
+  };
+  const quote = () => ({ outAmount: '1400000', priceImpactPct: 0,
+    route: { otherAmountThreshold: '1200000', swapMode: 'ExactIn' } });
+
+  beforeEach(() => mockGetQuoteTokenToUsdc.mockResolvedValue(quote()));
+
+  it('returns confirmed transaction proceeds rather than the quoted output', async () => {
+    const result = await makeBroker().closeLeg(leg, candle, 'TP');
+    expect(result).toEqual({ success: true, signature: 'sig', inputAmount: 1,
+      outputAmount: 1.25, executionPrice: 1.25, executedAt: 1700000000000 });
+    expect(mockGetTransaction).toHaveBeenCalledWith('sig', {
+      commitment: 'confirmed', maxSupportedTransactionVersion: 0,
+    });
+  });
+
+  it.each(['CLOSED', 'RETIRED'] as const)('does not submit a %s leg', async status => {
+    expect((await makeBroker().closeLeg({ ...leg, status }, candle, 'TP')).success).toBe(false);
+    expect(mockSendAndConfirm).not.toHaveBeenCalled();
+  });
+
+  it('does not resubmit a leg awaiting reconciliation', async () => {
+    const result = await makeBroker().closeLeg({ ...leg,
+      closePending: { signature: 'earlier', reason: 'timeout', since: 1 } }, candle, 'TP');
+    expect(result.success).toBe(false);
+    expect(mockSendAndConfirm).not.toHaveBeenCalled();
+  });
+
+  it.each(['balance', 'quote', 'validation', 'build', 'exception'])('returns explicit pre-send failure: %s', async stage => {
+    if (stage === 'balance') mockCanClosePosition.mockResolvedValue({ canClose: false, reason: 'insufficient' });
+    if (stage === 'quote') mockGetQuoteTokenToUsdc.mockResolvedValue(null);
+    if (stage === 'validation') mockValidateQuote.mockResolvedValue(false);
+    if (stage === 'build') mockBuildSwapTransaction.mockResolvedValue(null);
+    if (stage === 'exception') mockCanClosePosition.mockRejectedValue(new Error('RPC down'));
+    const result = await makeBroker().closeLeg(leg, candle, 'TP');
+    expect(result).toMatchObject({ success: false, error: expect.any(String) });
+    expect(result).not.toMatchObject({ unresolved: true });
+    expect(mockSendAndConfirm).not.toHaveBeenCalled();
+  });
+
+  it('distinguishes definitive chain failure from uncertain execution', async () => {
+    mockSendAndConfirm.mockResolvedValueOnce({ success: false, signature: 'failed', error: 'chain failure' });
+    expect(await makeBroker().closeLeg(leg, candle, 'TP')).toMatchObject({
+      success: false, signature: 'failed', error: 'chain failure',
+    });
+    mockSendAndConfirm.mockResolvedValueOnce({ success: false, unresolved: true, signature: 'unknown', error: 'timeout' });
+    expect(await makeBroker().closeLeg(leg, candle, 'TP')).toMatchObject({
+      success: false, signature: 'unknown', unresolved: true,
+    });
+    expect(mockGetTransaction).not.toHaveBeenCalled();
+  });
+
+  it('keeps the signature and uncertainty when fill lookup fails after confirmation', async () => {
+    mockGetTransaction.mockRejectedValue(new Error('RPC unavailable'));
+    expect(await makeBroker().closeLeg(leg, candle, 'TP')).toMatchObject({
+      success: false, signature: 'sig', unresolved: true,
+    });
+  });
+
+  it.each([null, { meta: null }, { meta: { err: null, preTokenBalances: [], postTokenBalances: [] } }])(
+    'does not invent sale proceeds when transaction evidence is missing: %j', async tx => {
+      mockGetTransaction.mockResolvedValue(tx);
+      expect(await makeBroker().closeLeg(leg, candle, 'TP')).toMatchObject({
+        success: false, signature: 'sig', unresolved: true,
+      });
+    }
+  );
+
+  it('treats a throw during submission as uncertain, never a safe-to-retry failure', async () => {
+    mockSendAndConfirm.mockRejectedValue(new Error('connection dropped'));
+    expect(await makeBroker().closeLeg(leg, candle, 'TP')).toMatchObject({ success: false, unresolved: true });
+  });
+
+  it('rejects a quote below the required TP proceeds without submitting', async () => {
+    const result = await makeBroker().closeLeg(leg, candle, 'TP', { minOutputUsdc: 2 });
+    expect(result.success).toBe(false);
+    expect(mockSendAndConfirm).not.toHaveBeenCalled();
+  });
+
+  it('raises the transaction minimum output while preserving a stricter existing threshold', async () => {
+    await makeBroker().closeLeg(leg, candle, 'TP', { minOutputUsdc: 1.25 });
+    expect(mockBuildSwapTransaction.mock.calls[0][0].route.otherAmountThreshold).toBe('1250000');
+    mockGetQuoteTokenToUsdc.mockResolvedValue({ ...quote(), route: {
+      otherAmountThreshold: '1300000', swapMode: 'ExactIn',
+    } });
+    await makeBroker().closeLeg(leg, candle, 'TP', { minOutputUsdc: 1.25 });
+    expect(mockBuildSwapTransaction.mock.calls[1][0].route.otherAmountThreshold).toBe('1300000');
   });
 });
 

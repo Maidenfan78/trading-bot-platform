@@ -61,7 +61,7 @@ export function withLock(lockFile: string, timeoutMs: number, fn: () => void): b
       }
       break; // acquired
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+      if ((error as { code?: string }).code !== 'EEXIST') throw error;
       try {
         const st = fs.statSync(lockFile);
         if (Date.now() - st.mtimeMs > LOCK_STALE_MS) {

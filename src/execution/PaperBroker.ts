@@ -1,6 +1,7 @@
-import type { Signal, PositionLeg, Candle, Logger } from '../types';
+import type { Signal, PositionLeg, Candle, Logger, CloseLegResult, CloseLegOptions } from '../types';
 import type { Broker, TradeAsset, PaperAccount, PaperBrokerConfig, PaperTradeExecution } from '../core/Broker';
 import { createTwoLegPosition, updatePositions, closeRunnersOnTrimSignal } from '../strategy/position';
+import { executeCloseIntent } from './closeIntent';
 
 /**
  * Paper Trading Broker
@@ -17,6 +18,7 @@ export class PaperBroker implements Broker {
   private config: PaperBrokerConfig;
   private tradeHistory: PaperTradeExecution[] = [];
   private logger?: Logger;
+  private closedLegIds = new Set<string>();
 
   constructor(config: PaperBrokerConfig, logger?: Logger) {
     this.config = config;
@@ -173,22 +175,32 @@ export class PaperBroker implements Broker {
   /**
    * Simulate closing a position leg
    */
-  async closeLeg(leg: PositionLeg, candle: Candle, reason: string): Promise<void> {
-    if (leg.status === 'CLOSED') {
+  async closeLeg(leg: PositionLeg, candle: Candle, reason: string, options: CloseLegOptions = {}): Promise<CloseLegResult> {
+    if (leg.status !== 'OPEN' || this.closedLegIds.has(leg.id) || leg.closePending) {
       this.logger?.warn('Attempted to close already-closed leg:', leg.id);
-      return;
+      return { success: false, error: 'Leg is not open, was already sold, or requires reconciliation' };
     }
 
     const baseClosePrice = leg.closePrice ?? candle.close;
     // Apply slippage (selling BTC)
     const fillPrice = this.applySlippage(baseClosePrice, false);
+    if (!Number.isFinite(fillPrice) || fillPrice <= 0 ||
+        !Number.isFinite(leg.quantity) || leg.quantity <= 0) {
+      return { success: false, error: 'Invalid sale price or quantity' };
+    }
 
     // Calculate USDC received
     const usdcReceived = leg.quantity * fillPrice;
+    if (options.minOutputUsdc !== undefined &&
+        (!Number.isFinite(options.minOutputUsdc) || options.minOutputUsdc <= 0 ||
+         usdcReceived < options.minOutputUsdc)) {
+      return { success: false, error: 'Sale proceeds would fall below the required minimum' };
+    }
 
     // Update balances
     this.account.btcBalance -= leg.quantity;
     this.account.usdcBalance += usdcReceived;
+    this.closedLegIds.add(leg.id);
 
     // Calculate P&L
     const profit = (fillPrice - leg.entryPrice) * leg.quantity;
@@ -204,7 +216,7 @@ export class PaperBroker implements Broker {
         atr: 0,
         price: fillPrice,
       },
-      action: leg.type === 'TP' ? 'CLOSE_TP' : 'CLOSE_RUNNER',
+      action: leg.type === 'TP' || leg.type === 'TRADE' ? 'CLOSE_TP' : 'CLOSE_RUNNER',
       price: fillPrice,
       usdcAmount: usdcReceived,
       btcAmount: -leg.quantity,
@@ -223,6 +235,13 @@ export class PaperBroker implements Broker {
       newUsdcBalance: this.account.usdcBalance.toFixed(2),
       newBtcBalance: this.account.btcBalance.toFixed(8),
     });
+    return {
+      success: true,
+      inputAmount: leg.quantity,
+      outputAmount: usdcReceived,
+      executionPrice: fillPrice,
+      executedAt: candle.timestamp,
+    };
   }
 
   /**
@@ -250,7 +269,7 @@ export class PaperBroker implements Broker {
       const nowClosed = leg.status === 'CLOSED';
 
       if (wasOpen && nowClosed) {
-        await this.closeLeg(leg, candle, leg.closeReason || 'Unknown');
+        updatedLegs[i] = await executeCloseIntent(this, legs[i], leg, candle, leg.closeReason || 'Unknown');
       }
     }
 
@@ -277,7 +296,7 @@ export class PaperBroker implements Broker {
       const nowClosed = leg.status === 'CLOSED';
 
       if (wasOpen && nowClosed && leg.type === 'RUNNER') {
-        await this.closeLeg(leg, candle, 'Trim signal (MFI < 70)');
+        trimmedLegs[i] = await executeCloseIntent(this, legs[i], leg, candle, 'Trim signal (MFI < 70)');
       }
     }
 

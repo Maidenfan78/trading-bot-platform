@@ -116,6 +116,10 @@ export interface PositionLeg {
   closePrice?: number;
   closeTime?: number;
   closeReason?: string;
+  /** A sale may have landed. Do not resubmit or retire until reconciled. */
+  closePending?: { signature?: string; reason: string; since: number };
+  /** Confirmed entry transaction, retained by consumers for ordered wallet reconciliation. */
+  entrySignature?: string;
   retireTime?: number;       // RETIRED leg: when it left the bot (no sale)
   retireReason?: string;     // RETIRED leg: why it was retired
   graduatedFrom?: LegType;   // HOLD leg produced by graduateLeg: its original type
@@ -257,6 +261,23 @@ export interface SwapResult {
   outputAmount: number;
   executionPrice: number;
 }
+
+/** A close is successful only when execution and the received amount are known. */
+export interface CloseLegOptions {
+  /** Consumer policy: do not execute below this USDC output (before native transaction fees). */
+  minOutputUsdc?: number;
+}
+
+export type CloseLegResult =
+  | {
+      success: true;
+      signature?: string;
+      inputAmount: number;
+      outputAmount: number;
+      executionPrice: number;
+      executedAt: number;
+    }
+  | { success: false; error: string; signature?: string; unresolved?: boolean };
 
 export interface BalanceInfo {
   usdc: number;

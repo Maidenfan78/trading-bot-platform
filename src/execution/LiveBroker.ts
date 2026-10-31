@@ -1,12 +1,14 @@
 import type { Keypair } from '@solana/web3.js';
 import { Connection, PublicKey } from '@solana/web3.js';
-import type { Signal, PositionLeg, Candle, SwapResult, Logger } from '../types';
+import type { Signal, PositionLeg, Candle, CloseLegResult, CloseLegOptions, Logger } from '../types';
 import type { Broker, LiveBrokerConfig, TradeAsset } from '../core/Broker';
 import { JupiterClient } from '../solana/jupiter';
 import { loadWallet, sendAndConfirmVersionedTransaction } from '../solana/wallet';
 import type { BalanceConfig } from '../solana/balances';
 import { canTrade, canTradeAsset, canClosePosition, getTokenBalance } from '../solana/balances';
 import { reconcileFilledQuantity } from './fillReconciliation';
+import { confirmedSaleProceeds } from './saleProceeds';
+import { executeCloseIntent } from './closeIntent';
 import { createTwoLegPosition, updatePositions, closeRunnersOnTrimSignal } from '../strategy/position';
 
 /**
@@ -315,6 +317,7 @@ export class LiveBroker implements Broker {
       );
       const legs = createdLegs.map((leg) => ({
         ...leg,
+        entrySignature: result.signature,
         mint: filledMint,
         decimals: filledDecimals,
         btcMint: filledMint, // legacy field, kept so old readers still resolve a mint
@@ -341,13 +344,16 @@ export class LiveBroker implements Broker {
   async closeLeg(
     leg: PositionLeg,
     candle: Candle,
-    reason: string
-  ): Promise<SwapResult | void> {
-    if (leg.status === 'CLOSED') {
+    reason: string,
+    options: CloseLegOptions = {}
+  ): Promise<CloseLegResult> {
+    if (leg.status !== 'OPEN' || leg.closePending) {
       this.logger?.warn('Attempted to close already-closed leg:', leg.id);
-      return;
+      return { success: false, error: 'Leg is not open or requires reconciliation' };
     }
 
+    let submissionStarted = false;
+    let signature: string | undefined;
     try {
       this.logger?.info('🔄 Closing position leg...', {
         legId: leg.id,
@@ -366,7 +372,7 @@ export class LiveBroker implements Broker {
           'dispose of the wrong asset.',
           { legId: leg.id, asset: leg.asset }
         );
-        return;
+        return { success: false, error: 'No mint recorded on leg' };
       }
       const decimals = leg.decimals ?? 8;
 
@@ -383,7 +389,7 @@ export class LiveBroker implements Broker {
 
       if (!closeCheck.canClose) {
         this.logger?.error('Position close rejected:', closeCheck.reason);
-        return;
+        return { success: false, error: closeCheck.reason || 'Sale balance check rejected' };
       }
 
       this.logger?.info('✓ Balance check passed - can close position');
@@ -393,10 +399,26 @@ export class LiveBroker implements Broker {
 
       if (!quote) {
         this.logger?.error('Failed to get quote from Jupiter');
-        return;
+        return { success: false, error: 'No sale quote available' };
       }
 
       const usdcReceived = Number(quote.outAmount) / 1e6;
+      if (options.minOutputUsdc !== undefined) {
+        const minimumRaw = Math.ceil(options.minOutputUsdc * 1_000_000);
+        if (!Number.isSafeInteger(minimumRaw) || minimumRaw <= 0 ||
+            BigInt(quote.outAmount) < BigInt(minimumRaw)) {
+          return { success: false, error: 'Sale quote is below the required minimum proceeds' };
+        }
+        // Jupiter encodes this threshold into the transaction, so adverse movement
+        // must fail the swap instead of selling below the consumer's target.
+        const route = quote.route as { otherAmountThreshold?: string; swapMode?: string };
+        if (!route || route.swapMode !== 'ExactIn' || !/^\d+$/.test(route.otherAmountThreshold ?? '')) {
+          return { success: false, error: 'Cannot enforce minimum proceeds on this sale quote' };
+        }
+        if (BigInt(route.otherAmountThreshold!) < BigInt(minimumRaw)) {
+          quote.route = { ...route, otherAmountThreshold: String(minimumRaw) };
+        }
+      }
 
       this.logger?.info('✓ Quote received', {
         inputBtc: leg.quantity.toFixed(8),
@@ -409,7 +431,7 @@ export class LiveBroker implements Broker {
 
       if (!isQuoteValid) {
         this.logger?.error('Quote validation failed - price degraded too much');
-        return;
+        return { success: false, error: 'Sale quote validation failed' };
       }
 
       this.logger?.info('✓ Quote validated');
@@ -422,7 +444,7 @@ export class LiveBroker implements Broker {
 
       if (!transaction) {
         this.logger?.error('Failed to build swap transaction');
-        return;
+        return { success: false, error: 'Could not build sale transaction' };
       }
 
       this.logger?.info('✓ Swap transaction built');
@@ -430,6 +452,7 @@ export class LiveBroker implements Broker {
       // 6. Execute swap
       this.logger?.info('📤 Sending transaction to Solana...');
 
+      submissionStarted = true;
       const result = await sendAndConfirmVersionedTransaction(
         this.connection,
         transaction,
@@ -440,10 +463,30 @@ export class LiveBroker implements Broker {
         },
         this.logger
       );
+      signature = result.signature || undefined;
 
       if (!result.success) {
         this.logger?.error('Swap transaction failed:', result.error);
-        return;
+        return {
+          success: false,
+          error: result.error || 'Sale transaction failed',
+          signature,
+          // With no returned signature, a lost send response cannot prove that
+          // nothing landed. Quarantine rather than inviting another sale.
+          unresolved: result.unresolved || !signature || undefined,
+        };
+      }
+
+      const proceeds = await confirmedSaleProceeds(
+        this.connection, result.signature, this.wallet.publicKey, this.config.usdcMint
+      );
+      if (!proceeds || (options.minOutputUsdc !== undefined && proceeds.usdc < options.minOutputUsdc)) {
+        return {
+          success: false,
+          unresolved: true,
+          signature,
+          error: 'Sale confirmed but actual USDC proceeds require reconciliation',
+        };
       }
 
       this.logger?.info('✅ Position closed successfully!', {
@@ -452,7 +495,7 @@ export class LiveBroker implements Broker {
       });
 
       // 7. Calculate P&L
-      const avgExitPrice = usdcReceived / leg.quantity;
+      const avgExitPrice = proceeds.usdc / leg.quantity;
       const pnl = (avgExitPrice - leg.entryPrice) * leg.quantity;
       const pnlPct = ((avgExitPrice - leg.entryPrice) / leg.entryPrice) * 100;
 
@@ -467,12 +510,18 @@ export class LiveBroker implements Broker {
         success: true,
         signature: result.signature,
         inputAmount: leg.quantity,
-        outputAmount: usdcReceived,
+        outputAmount: proceeds.usdc,
         executionPrice: avgExitPrice,
+        executedAt: proceeds.executedAt,
       };
     } catch (error: any) {
       this.logger?.error('Failed to close position:', error.message);
-      return;
+      return {
+        success: false,
+        error: error.message || 'Sale execution failed',
+        signature,
+        unresolved: submissionStarted || undefined,
+      };
     }
   }
 
@@ -501,7 +550,7 @@ export class LiveBroker implements Broker {
       const nowClosed = leg.status === 'CLOSED';
 
       if (wasOpen && nowClosed) {
-        await this.closeLeg(leg, candle, leg.closeReason || 'Unknown');
+        updatedLegs[i] = await executeCloseIntent(this, legs[i], leg, candle, leg.closeReason || 'Unknown');
       }
     }
 
@@ -528,7 +577,7 @@ export class LiveBroker implements Broker {
       const nowClosed = leg.status === 'CLOSED';
 
       if (wasOpen && nowClosed && leg.type === 'RUNNER') {
-        await this.closeLeg(leg, candle, 'Trim signal (MFI < 70)');
+        trimmedLegs[i] = await executeCloseIntent(this, legs[i], leg, candle, 'Trim signal (MFI < 70)');
       }
     }
 

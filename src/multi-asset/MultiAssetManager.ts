@@ -104,6 +104,10 @@ export function canAssetTrade(
     return { canTrade: false, reason: 'Asset not found in state' };
   }
 
+  if (assetPos.openLegs.some(leg => leg.closePending)) {
+    return { canTrade: false, reason: `${assetSymbol} requires sale reconciliation` };
+  }
+
   // Check per-asset position limit
   const assetOpenPositions = getOpenPositionCountForAsset(assetPos);
   if (assetOpenPositions >= config.maxPositionsPerAsset) {
